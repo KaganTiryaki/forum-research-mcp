@@ -12,9 +12,33 @@ test("catalog keeps 25 candidates per locale and excludes blocked platforms", as
   assert.equal(catalog.some((source) => source.id === "eksi-sozluk" || source.id === "linkedin"), false);
   assert.deepEqual(catalog.filter((source) => source.enabled).map((source) => source.id), [
     "donanimarsivi", "donanimhaber", "technopat", "sergip",
-    "stack-overflow", "super-user", "server-fault", "hacker-news", "github-discussions",
+    "stack-overflow", "super-user", "server-fault", "hacker-news", "github-discussions", "gcaptain",
   ]);
   assert.equal(catalog.find((source) => source.id === "reddit-tr")?.disabledReason, "http_403");
   assert.equal(catalog.find((source) => source.id === "denizcilik-fakultesi")?.disabledReason, "login_required");
+  assert.deepEqual(catalog.find((source) => source.id === "gcaptain"), {
+    id: "gcaptain",
+    locale: "en",
+    displayName: "gCaptain Professional Mariner Forum",
+    domains: ["forum.gcaptain.com"],
+    categories: ["maritime", "professional", "engineering"],
+    readMethod: "public_html",
+    policyStatus: "reference_allowed",
+    robotsStatus: "reference_allowed",
+    termsStatus: "read_only_assessed",
+    rateLimitMs: 1500,
+    enabled: true,
+    discoveryStrategy: "category_index",
+    searchCapability: "sampled_index",
+    domainTags: ["maritime", "professional"],
+    categoryIndexes: [
+      "https://forum.gcaptain.com/c/professional-mariner-forum/5.json",
+      "https://forum.gcaptain.com/c/engineering/16.json",
+      "https://forum.gcaptain.com/c/offshore/11.json",
+    ],
+    discoveryDomains: undefined,
+    sitemapUrl: undefined,
+    disabledReason: undefined,
+  });
   assert.ok(catalog.every((source) => source.robotsStatus && source.termsStatus));
 });

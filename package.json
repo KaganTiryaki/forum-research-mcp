@@ -1,6 +1,6 @@
 {
   "name": "forum-research-mcp",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Read-only bilingual MCP server for researching public Turkish and English forum discussions.",
   "private": true,
   "type": "module",

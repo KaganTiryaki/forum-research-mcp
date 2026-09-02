@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { catalog, getSource } from "../src/catalog.js";
-import { discoverThreads } from "../src/discovery.js";
+import { discoverThreads, scheduleDiscoveryAttempts } from "../src/discovery.js";
 import { SourceRateLimiter } from "../src/rate-limit.js";
 
 function source(id: string) {
@@ -9,6 +9,109 @@ function source(id: string) {
   assert.ok(match, `missing catalog source ${id}`);
   return match;
 }
+
+test("deep scheduling gives every maritime variant three distinct source attempts before spending spare budget", () => {
+  const sources = [
+    source("donanimarsivi"), source("donanimhaber"), source("technopat"), source("sergip"),
+    source("stack-overflow"), source("super-user"), source("server-fault"), source("hacker-news"), source("github-discussions"),
+  ];
+  const queries = [
+    "gemi bakım yazılımı", "AMOS gemi bakım", "ShipManager planned maintenance", "Sertica gemi",
+    "BASSnet bakım", "NS5 ship maintenance", "TM Master", "planned maintenance system PMS", "gemi bakım yönetim sistemi",
+  ];
+
+  const attempts = scheduleDiscoveryAttempts({ queries, sources, maxRequests: 40 });
+
+  assert.equal(attempts.length, 40);
+  for (const query of queries) {
+    const sourceIds = attempts.filter((attempt) => attempt.query === query).map((attempt) => attempt.source.id);
+    assert.ok(sourceIds.length >= 3, `${query} was not attempted three times`);
+    assert.equal(new Set(sourceIds.slice(0, 3)).size, 3, `${query} repeated a source before coverage was complete`);
+  }
+  assert.ok(attempts.some((attempt) => attempt.query === "NS5 ship maintenance"));
+  assert.ok(attempts.some((attempt) => attempt.query === "TM Master"));
+  assert.ok(attempts.some((attempt) => attempt.query === "planned maintenance system PMS"));
+});
+
+test("unbounded scheduling visits each query-source pair once", () => {
+  const queries = ["one", "two"];
+  const sources = [source("donanimarsivi"), source("technopat")];
+
+  const attempts = scheduleDiscoveryAttempts({ queries, sources });
+
+  assert.equal(attempts.length, 4);
+  assert.equal(new Set(attempts.map((attempt) => `${attempt.query}:${attempt.source.id}`)).size, 4);
+});
+
+test("gCaptain uses an allowlisted category JSON index and never its robots-denied search path", async () => {
+  const requested: string[] = [];
+  const fetcher = (async (input: URL | string) => {
+    requested.push(String(input));
+    return new Response(JSON.stringify({
+      topic_list: {
+        topics: [{
+          id: 63622,
+          slug: "generating-and-maintaining-shipboard-work-lists",
+          title: "Generating and maintaining shipboard work lists",
+          excerpt: "Planned Maintenance System data entry and inspection workload.",
+          created_at: "2022-07-16T00:00:00.000Z",
+        }],
+      },
+    }), { headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+
+  const result = await discoverThreads({
+    query: "ship planned maintenance system",
+    sources: [source("gcaptain")],
+    fetcher,
+    rateLimiter: new SourceRateLimiter(() => 0, async () => undefined),
+  });
+
+  assert.equal(requested.length, 1);
+  assert.match(requested[0]!, /^https:\/\/forum\.gcaptain\.com\/c\/professional-mariner-forum\/5\.json/);
+  assert.equal(requested.some((url) => /\/search(?:\.json)?/.test(new URL(url).pathname)), false);
+  assert.deepEqual(result.threads.map((thread) => ({ url: thread.url, title: thread.title })), [{
+    url: "https://forum.gcaptain.com/t/generating-and-maintaining-shipboard-work-lists/63622",
+    title: "Generating and maintaining shipboard work lists",
+  }]);
+});
+
+test("a blocked source leaves a later distinct source attempt available for the same query", async () => {
+  const fetcher = (async (input: URL | string) => {
+    const url = new URL(String(input));
+    if (url.hostname === "www.technopat.net") return new Response("blocked", { status: 429 });
+    if (url.hostname === "search.donanimhaber.com") return new Response(JSON.stringify({ hash: "fixture", messages: [] }), { headers: { "content-type": "application/json" } });
+    if (url.hostname === "api.stackexchange.com") return new Response(JSON.stringify({ items: [] }), { headers: { "content-type": "application/json" } });
+    return new Response(`<html><body><a href="/konu/fallback-coverage.1/">Fallback coverage</a></body></html>`, { headers: { "content-type": "text/html" } });
+  }) as typeof fetch;
+
+  const result = await discoverThreads({
+    query: "fallback coverage",
+    sources: [source("donanimarsivi"), source("donanimhaber"), source("technopat"), source("stack-overflow")],
+    maxRequests: 4,
+    fetcher,
+    rateLimiter: new SourceRateLimiter(() => 0, async () => undefined),
+  });
+
+  const outcomes = result.sourceOutcomes?.filter((outcome) => outcome.query === "fallback coverage") ?? [];
+  assert.equal(outcomes.find((outcome) => outcome.sourceId === "technopat")?.status, "blocked");
+  assert.equal(outcomes.find((outcome) => outcome.sourceId === "stack-overflow")?.status, "success");
+  assert.equal(outcomes.find((outcome) => outcome.sourceId === "stack-overflow")?.attemptOrdinal, 4);
+});
+
+test("gCaptain rejects a non-JSON category response without trying search", async () => {
+  const requested: string[] = [];
+  const fetcher = (async (input: URL | string) => {
+    requested.push(String(input));
+    return new Response("not a category index", { headers: { "content-type": "text/html" } });
+  }) as typeof fetch;
+
+  const result = await discoverThreads({ query: "ship maintenance", sources: [source("gcaptain")], fetcher });
+
+  assert.deepEqual(result.threads, []);
+  assert.match(result.warnings.join(" "), /category index response was not JSON/i);
+  assert.equal(requested.length, 1);
+});
 
 test("Reddit discovery works directly without an API key", async () => {
   const requested: string[] = [];
@@ -254,6 +357,9 @@ test("every enabled catalog source has a direct discovery adapter", async () => 
     if (hostname === "search.donanimhaber.com") {
       return new Response(JSON.stringify({ hash: "fixture", messages: [] }), { headers: { "content-type": "application/json" } });
     }
+    if (hostname === "forum.gcaptain.com") {
+      return new Response(JSON.stringify({ topic_list: { topics: [] } }), { headers: { "content-type": "application/json" } });
+    }
     return new Response("<!doctype html><html><body>No matches</body></html>", { headers: { "content-type": "text/html" } });
   }) as typeof fetch;
   const enabled = catalog.filter((candidate) => candidate.enabled);
@@ -297,6 +403,11 @@ test("every enabled adapter extracts a canonical thread from a realistic respons
     }
     if (url.hostname === "search.donanimhaber.com" && url.pathname.includes("/api/redirect/")) {
       return new Response(null, { status: 302, headers: { location: "https://forum.donanimhaber.com/adapter-fixture-konu-7" } });
+    }
+    if (url.hostname === "forum.gcaptain.com") {
+      return new Response(JSON.stringify({
+        topic_list: { topics: [{ id: 42, slug: "adapter-fixture", title: "Adapter fixture", excerpt: "Adapter fixture context", created_at: "2026-09-03T00:00:00.000Z" }] },
+      }), { headers: { "content-type": "application/json" } });
     }
     const path = url.hostname === "www.technopat.net"
       ? "/sosyal/konu/ekran-karti-deneyimi.12345/"

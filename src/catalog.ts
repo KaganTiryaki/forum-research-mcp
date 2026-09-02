@@ -5,6 +5,7 @@ export type PolicyStatus = "reference_allowed" | "api_required" | "needs_review"
 export type RobotsStatus = "reference_allowed" | "needs_review";
 export type TermsStatus = "read_only_assessed" | "manual_review_required";
 export type DiscoveryStrategy = "direct_search" | "category_index" | "sitemap";
+export type SearchCapability = "query_search" | "sampled_index";
 
 export interface Source {
   id: string;
@@ -19,6 +20,8 @@ export interface Source {
   rateLimitMs: number;
   enabled: boolean;
   discoveryStrategy: DiscoveryStrategy;
+  searchCapability: SearchCapability;
+  domainTags: string[];
   discoveryDomains?: string[];
   categoryIndexes?: string[];
   sitemapUrl?: string;
@@ -31,6 +34,8 @@ interface SourceOptions {
   categoryIndexes?: string[];
   sitemapUrl?: string;
   disabledReason?: string;
+  searchCapability?: SearchCapability;
+  domainTags?: string[];
 }
 
 const tr = (id: string, displayName: string, domain: string, categories: string[], enabled = false, options: SourceOptions = {}): Source => ({
@@ -46,6 +51,8 @@ const tr = (id: string, displayName: string, domain: string, categories: string[
   rateLimitMs: 1_500,
   enabled,
   discoveryStrategy: options.discoveryStrategy ?? "direct_search",
+  searchCapability: options.searchCapability ?? "query_search",
+  domainTags: options.domainTags ?? [],
   discoveryDomains: options.discoveryDomains,
   categoryIndexes: options.categoryIndexes,
   sitemapUrl: options.sitemapUrl,
@@ -73,6 +80,8 @@ const en = (
   rateLimitMs: 1_500,
   enabled,
   discoveryStrategy: options.discoveryStrategy ?? "direct_search",
+  searchCapability: options.searchCapability ?? "query_search",
+  domainTags: options.domainTags ?? [],
   discoveryDomains: options.discoveryDomains,
   categoryIndexes: options.categoryIndexes,
   sitemapUrl: options.sitemapUrl,
@@ -96,6 +105,8 @@ export const catalog: Source[] = [
   tr("sergip", "SERGİP Forum", "sergip.com", ["denizcilik", "gemiadamları", "kariyer"], true, {
     discoveryStrategy: "category_index",
     categoryIndexes: ["https://sergip.com/forum/23-gemiadamlari-tartisma-bolumu/"],
+    searchCapability: "sampled_index",
+    domainTags: ["maritime", "professional"],
   }),
   tr("kadinlarkulubu", "Kadınlar Kulübü", "www.kadinlarkulubu.com", ["yaşam", "sağlık", "ebeveynlik"]),
   tr("memurlar", "Memurlar.net Forum", "forum.memurlar.net", ["kamu", "kariyer", "hukuk"]),
@@ -121,6 +132,16 @@ export const catalog: Source[] = [
   en("server-fault", "Server Fault", "serverfault.com", ["infrastructure", "security"], true),
   en("hacker-news", "Hacker News", "news.ycombinator.com", ["technology", "startups"], true),
   en("github-discussions", "GitHub Discussions", "github.com", ["software", "open-source"], true),
+  en("gcaptain", "gCaptain Professional Mariner Forum", "forum.gcaptain.com", ["maritime", "professional", "engineering"], true, "public_html", {
+    discoveryStrategy: "category_index",
+    searchCapability: "sampled_index",
+    domainTags: ["maritime", "professional"],
+    categoryIndexes: [
+      "https://forum.gcaptain.com/c/professional-mariner-forum/5.json",
+      "https://forum.gcaptain.com/c/engineering/16.json",
+      "https://forum.gcaptain.com/c/offshore/11.json",
+    ],
+  }),
   en("xda-developers", "XDA Developers", "xdaforums.com", ["mobile", "hardware"]),
   en("toms-hardware", "Tom's Hardware", "forums.tomshardware.com", ["hardware", "gaming"]),
   en("linus-tech-tips", "Linus Tech Tips Forum", "linustechtips.com", ["hardware", "gaming"]),
@@ -139,7 +160,6 @@ export const catalog: Source[] = [
   en("unreal-forums", "Unreal Engine Forums", "forums.unrealengine.com", ["game-development", "software"]),
   en("blender-artists", "Blender Artists", "blenderartists.org", ["3D", "software"]),
   en("shopify-community", "Shopify Community", "community.shopify.com", ["ecommerce", "business"]),
-  en("indie-hackers", "Indie Hackers", "www.indiehackers.com", ["startups", "business"]),
 ];
 
 export function sourcesForLocales(locales: Locale[], requestedIds?: string[]): Source[] {

@@ -111,7 +111,8 @@ test("search normalizes variants and caps discovery requests by depth", async ()
 
   assert.deepEqual(calls[0]?.queryVariants, ["AMOS gemi bakım", "ShipManager planned maintenance"]);
   assert.equal(calls[0]?.maxRequests, 6);
-  assert.deepEqual(result.coverage.queriesUsed, ["gemi bakım yazılımı", "AMOS gemi bakım", "ShipManager planned maintenance"]);
+  assert.deepEqual(result.coverage.requestedQueries, ["gemi bakım yazılımı", "AMOS gemi bakım", "ShipManager planned maintenance"]);
+  assert.deepEqual(result.coverage.queriesUsed, []);
 });
 
 test("maritime maintenance queries receive bounded specialist variants when none are supplied", async () => {
@@ -123,6 +124,58 @@ test("maritime maintenance queries receive bounded specialist variants when none
   assert.ok(result.query_variants.includes("AMOS gemi bakım"));
   assert.ok(result.query_variants.includes("gemi bakım yönetim sistemi"));
   assert.ok(result.query_variants.length <= 12);
+});
+
+test("research reports coverage_limited when a requested variant lacks three successful sources", async () => {
+  const { ForumResearchService } = await import("../src/research.js");
+  const service = new ForumResearchService({
+    discover: async () => ({
+      threads: [],
+      warnings: [],
+      sourceOutcomes: [
+        { query: "gemi bakım yazılımı", sourceId: "donanimarsivi", status: "success", discoveredCount: 0, strategy: "direct_search", attemptOrdinal: 1 },
+        { query: "gemi bakım yazılımı", sourceId: "technopat", status: "success", discoveredCount: 0, strategy: "direct_search", attemptOrdinal: 2 },
+        { query: "gemi bakım yazılımı", sourceId: "donanimhaber", status: "success", discoveredCount: 0, strategy: "direct_search", attemptOrdinal: 3 },
+        { query: "AMOS gemi bakım", sourceId: "donanimarsivi", status: "success", discoveredCount: 0, strategy: "direct_search", attemptOrdinal: 1 },
+        { query: "AMOS gemi bakım", sourceId: "technopat", status: "success", discoveredCount: 0, strategy: "direct_search", attemptOrdinal: 2 },
+      ],
+    }),
+  });
+
+  const result = await service.research({
+    query: "gemi bakım yazılımı",
+    queryVariants: ["AMOS gemi bakım"],
+    locale: "tr",
+    depth: "deep",
+  });
+
+  assert.equal(result.status, "coverage_limited");
+  assert.equal(result.coverage_complete_for_no_relevant_evidence, false);
+  assert.deepEqual(result.coverage.requestedQueries, ["gemi bakım yazılımı", "AMOS gemi bakım"]);
+  assert.deepEqual(result.coverage.executedQueries, ["gemi bakım yazılımı", "AMOS gemi bakım"]);
+  assert.equal(result.coverage.perQuery.find((item) => item.query === "AMOS gemi bakım")?.successfulSources.length, 2);
+  assert.match(result.findings.coverageWarning ?? "", /maritime query-search source/i);
+});
+
+test("research returns no_relevant_evidence only after every non-maritime query has three successful sources", async () => {
+  const { ForumResearchService } = await import("../src/research.js");
+  const queries = ["programming editor experience", "editor integration"];
+  const sourceIds = ["stack-overflow", "super-user", "server-fault"];
+  const service = new ForumResearchService({
+    discover: async () => ({
+      threads: [],
+      warnings: [],
+      sourceOutcomes: queries.flatMap((query) => sourceIds.map((sourceId, index) => ({
+        query, sourceId, status: "success" as const, discoveredCount: 0, strategy: "direct_search" as const, attemptOrdinal: index + 1,
+      }))),
+    }),
+  });
+
+  const result = await service.research({ query: queries[0]!, queryVariants: [queries[1]!], locale: "en", depth: "deep" });
+
+  assert.equal(result.status, "no_relevant_evidence");
+  assert.equal(result.coverage_complete_for_no_relevant_evidence, true);
+  assert.deepEqual(result.coverage.queriesUsed, queries);
 });
 
 test("auto search survives a failed initial locale by returning fallback-locale results", async () => {
