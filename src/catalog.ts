@@ -4,6 +4,7 @@ export type ReadMethod = "public_html" | "official_api";
 export type PolicyStatus = "reference_allowed" | "api_required" | "needs_review";
 export type RobotsStatus = "reference_allowed" | "needs_review";
 export type TermsStatus = "read_only_assessed" | "manual_review_required";
+export type DiscoveryStrategy = "direct_search" | "category_index" | "sitemap";
 
 export interface Source {
   id: string;
@@ -17,11 +18,22 @@ export interface Source {
   termsStatus: TermsStatus;
   rateLimitMs: number;
   enabled: boolean;
+  discoveryStrategy: DiscoveryStrategy;
+  discoveryDomains?: string[];
+  categoryIndexes?: string[];
+  sitemapUrl?: string;
+  disabledReason?: string;
 }
 
-type Candidate = Omit<Source, "locale">;
+interface SourceOptions {
+  discoveryStrategy?: DiscoveryStrategy;
+  discoveryDomains?: string[];
+  categoryIndexes?: string[];
+  sitemapUrl?: string;
+  disabledReason?: string;
+}
 
-const tr = (id: string, displayName: string, domain: string, categories: string[], enabled = false): Source => ({
+const tr = (id: string, displayName: string, domain: string, categories: string[], enabled = false, options: SourceOptions = {}): Source => ({
   id,
   locale: "tr",
   displayName,
@@ -33,6 +45,11 @@ const tr = (id: string, displayName: string, domain: string, categories: string[
   termsStatus: enabled ? "read_only_assessed" : "manual_review_required",
   rateLimitMs: 1_500,
   enabled,
+  discoveryStrategy: options.discoveryStrategy ?? "direct_search",
+  discoveryDomains: options.discoveryDomains,
+  categoryIndexes: options.categoryIndexes,
+  sitemapUrl: options.sitemapUrl,
+  disabledReason: enabled ? undefined : options.disabledReason ?? "policy_or_access_review",
 });
 
 const en = (
@@ -42,6 +59,7 @@ const en = (
   categories: string[],
   enabled = false,
   readMethod: ReadMethod = "public_html",
+  options: SourceOptions = {},
 ): Source => ({
   id,
   locale: "en",
@@ -54,19 +72,31 @@ const en = (
   termsStatus: enabled ? "read_only_assessed" : "manual_review_required",
   rateLimitMs: 1_500,
   enabled,
+  discoveryStrategy: options.discoveryStrategy ?? "direct_search",
+  discoveryDomains: options.discoveryDomains,
+  categoryIndexes: options.categoryIndexes,
+  sitemapUrl: options.sitemapUrl,
+  disabledReason: enabled ? undefined : options.disabledReason ?? "policy_or_access_review",
 });
 
 export const catalog: Source[] = [
-  tr("reddit-tr", "Reddit Türkiye toplulukları", "www.reddit.com", ["genel", "teknoloji", "gündem"]),
+  tr("reddit-tr", "Reddit Türkiye toplulukları", "www.reddit.com", ["genel", "teknoloji", "gündem"], false, { disabledReason: "http_403" }),
   tr("donanimarsivi", "Donanım Arşivi Forum", "forum.donanimarsivi.com", ["teknoloji", "oyun", "donanım"], true),
-  tr("donanimhaber", "DonanımHaber Forum", "forum.donanimhaber.com", ["teknoloji", "otomobil", "alışveriş"]),
+  tr("donanimhaber", "DonanımHaber Forum", "forum.donanimhaber.com", ["teknoloji", "otomobil", "alışveriş"], true, {
+    discoveryDomains: ["search.donanimhaber.com"],
+  }),
   tr("technopat", "Technopat Sosyal", "www.technopat.net", ["teknoloji", "yazılım", "oyun"], true),
   tr("techolay", "Techolay Sosyal", "techolay.net", ["teknoloji", "yazılım", "oyun"]),
   tr("r10", "R10.net", "www.r10.net", ["webmaster", "yazılım", "SEO"]),
   tr("kizlarsoruyor", "KızlarSoruyor", "www.kizlarsoruyor.com", ["yaşam", "ilişkiler", "soru-cevap"]),
   tr("forumtr", "ForumTR", "www.forumtr.com", ["genel", "teknoloji", "yaşam"]),
-  tr("shiftdelete", "ShiftDelete.Net Forum", "forum.shiftdelete.net", ["teknoloji", "mobil", "oyun"]),
-  tr("wmaraci", "WM Aracı", "wmaraci.com", ["webmaster", "SEO", "yazılım"]),
+  tr("shiftdelete", "ShiftDelete.Net Forum", "forum.shiftdelete.net", ["teknoloji", "mobil", "oyun"], false, {
+    discoveryStrategy: "sitemap", sitemapUrl: "https://forum.shiftdelete.net/sitemap.xml", disabledReason: "policy_verification_pending",
+  }),
+  tr("sergip", "SERGİP Forum", "sergip.com", ["denizcilik", "gemiadamları", "kariyer"], true, {
+    discoveryStrategy: "category_index",
+    categoryIndexes: ["https://sergip.com/forum/23-gemiadamlari-tartisma-bolumu/"],
+  }),
   tr("kadinlarkulubu", "Kadınlar Kulübü", "www.kadinlarkulubu.com", ["yaşam", "sağlık", "ebeveynlik"]),
   tr("memurlar", "Memurlar.net Forum", "forum.memurlar.net", ["kamu", "kariyer", "hukuk"]),
   tr("hukuki", "Hukuki.NET Forum", "www.hukuki.net", ["hukuk", "yaşam"]),
@@ -74,14 +104,16 @@ export const catalog: Source[] = [
   tr("turkceandroid", "Turkcell Topluluk", "topluluk.turkcell.com.tr", ["mobil", "telekom", "destek"]),
   tr("vodafone-topluluk", "Vodafone Topluluk", "yanimda.vodafone.com.tr", ["mobil", "telekom", "destek"]),
   tr("turktelekom-topluluk", "Türk Telekom Topluluk", "forum.turktelekom.com.tr", ["internet", "telekom", "destek"]),
-  tr("sikayetvar", "Şikayetvar", "www.sikayetvar.com", ["tüketici", "hizmet", "ürün"]),
+  tr("denizcilik-fakultesi", "Denizcilik Fakültesi", "www.denizcilikfakultesi.com", ["denizcilik", "eğitim", "gemiadamları"], false, { disabledReason: "login_required" }),
   tr("otopark", "Otopark.com", "www.otopark.com", ["otomobil", "ulaşım"]),
   tr("motordelisi", "MotorDelisi", "www.motordelisi.com", ["motosiklet", "ulaşım"]),
   tr("bisikletforum", "Bisiklet Forum", "www.bisikletforum.com", ["spor", "ulaşım"]),
   tr("technoseyir", "TeknoSeyir", "teknoseyir.com", ["teknoloji", "oyun", "yazılım"]),
   tr("oyunfor", "Oyunfor Forum", "forum.oyunfor.com", ["oyun", "e-spor"]),
   tr("frpnet", "FRPNet Forum", "forum.frpnet.net", ["oyun", "kültür"]),
-  tr("pc-hocasi", "PC Hocası Forum", "forum.pchocasi.com.tr", ["teknoloji", "donanım", "kullanıcı deneyimi"]),
+  tr("pc-hocasi", "PC Hocası Forum", "forum.pchocasi.com.tr", ["teknoloji", "donanım", "kullanıcı deneyimi"], false, {
+    discoveryStrategy: "sitemap", sitemapUrl: "https://forum.pchocasi.com.tr/sitemap.xml", disabledReason: "policy_verification_pending",
+  }),
 
   en("reddit", "Reddit", "www.reddit.com", ["general", "technology", "communities"]),
   en("stack-overflow", "Stack Overflow", "stackoverflow.com", ["programming", "software"], true),

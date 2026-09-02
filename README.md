@@ -12,6 +12,7 @@ This repository currently uses a clone-and-build distribution model; it is not p
 - Public pages only; no login, posting, voting, or account actions
 - Per-source rate limits and a strict domain allowlist
 - Explicit coverage warnings for `401`, `403`, `429`, CAPTCHA, timeout, and malformed responses
+- Two-stage relevance checks reject rules, privacy, account, and FAQ pages for ordinary product research
 - Compact SQLite cache for discovery metadata; no full-page archive
 
 ## Requirements
@@ -30,6 +31,16 @@ npm run build
 ```
 
 No environment variables are required.
+
+To update an existing checkout to v0.2.0:
+
+```bash
+git pull --ff-only
+npm ci
+npm run build
+```
+
+Restart the MCP host after rebuilding.
 
 ## Connect an MCP host
 
@@ -76,6 +87,7 @@ Discovers relevant public threads. Discovery snippets are navigation metadata an
 {
   "query": "long-term user experiences with OLED monitors",
   "locale": "both",
+  "depth": "standard",
   "sources": ["technopat", "hacker-news"]
 }
 ```
@@ -86,13 +98,16 @@ Discovers threads and reads their public pages to return a source-linked evidenc
 
 ```json
 {
-  "query": "Türkiye'de fiber internet kullanıcı deneyimleri",
-  "locale": "auto",
-  "depth": "standard"
+  "query": "gemi bakım yazılımı kullanıcı deneyimleri",
+  "locale": "tr",
+  "depth": "deep",
+  "query_variants": ["AMOS gemi bakım", "ShipManager planned maintenance"]
 }
 ```
 
-`depth` may be `quick`, `standard`, or `deep`. `locale` may be `auto`, `tr`, `en`, or `both`. Automatic routing starts with the most relevant language. `forum_search` expands when fewer than three distinct sources are discovered; `forum_research` also expands when fewer than three distinct sources produce directly readable evidence.
+`depth` may be `quick`, `standard`, or `deep`, with discovery budgets of 6, 18, and 40 requests respectively. `locale` may be `auto`, `tr`, `en`, or `both`. Explicit Turkish or English research never switches language; only `auto` can expand. `query_variants` accepts at most 12 deduplicated variations. Maritime maintenance queries receive a bounded default set when none is supplied.
+
+Every research result includes a `status`: `ok` needs relevant direct evidence from at least three sources, `partial` has one or two, `no_relevant_evidence` means at least three sources were searched but yielded no relevant direct evidence, and `coverage_limited` means fewer than three sources could be searched. Search snippets alone are never evidence.
 
 ### `thread_read`
 
@@ -105,12 +120,25 @@ Reads one public thread from an enabled source after validating its source ID, p
 }
 ```
 
+### `forum_sources`
+
+Lists every active and passive candidate, its language, read and discovery domains, strategy, policy state, and the precise reason a passive source is not requested.
+
 ## Source catalog
 
-The catalog contains 25 Turkish and 25 English candidates. Seven sources have verified, working adapters and are enabled in the initial release:
+The catalog contains 25 Turkish and 25 English candidates. It is an auditable candidate list, not a promise that 25 sources are active. The enabled sources in v0.2.0 are:
 
-- Turkish: Donanım Arşivi, Technopat
-- English: Stack Overflow, Super User, Server Fault, Hacker News, GitHub Discussions
+| Language | Source | Discovery method | Read domain |
+| --- | --- | --- | --- |
+| Turkish | Donanım Arşivi Forum | public site search | `forum.donanimarsivi.com` |
+| Turkish | DonanımHaber Forum | public `search.donanimhaber.com` service | `forum.donanimhaber.com` |
+| Turkish | Technopat Sosyal | public site search | `www.technopat.net` |
+| Turkish | SERGİP Forum | bounded public category index | `sergip.com` |
+| English | Stack Overflow, Super User, Server Fault | Stack Exchange public API | their own domains |
+| English | Hacker News | public Algolia endpoint | `news.ycombinator.com` |
+| English | GitHub Discussions | public GitHub search response | `github.com` |
+
+ShiftDelete and PC Hocası sitemap adapters are present but passive until policy and public-read verification is refreshed. Reddit TR is passive after `403`, and Denizcilik Fakültesi is passive because its relevant areas require login. `forum_sources` reports these states at runtime.
 
 Disabled candidates remain visible in the catalog for review but are never requested. This includes sources that returned an access block, moved their search endpoint, or could not produce a verified result during release testing. LinkedIn and Ekşi Sözlük are intentionally excluded. Source availability changes over time; an enabled source can still reject automated access. The server reports that gap instead of attempting to bypass it.
 

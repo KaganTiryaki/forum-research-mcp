@@ -1,6 +1,8 @@
 import type { Source } from "./catalog.js";
 import { readTextWithLimit } from "./http-body.js";
 import { defaultRateLimiter, type SourceRateLimiter } from "./rate-limit.js";
+import { assessRelevance } from "./relevance.js";
+import { parseSitemapEntries, parseSitemapIndex } from "./sitemap.js";
 
 export interface DiscoveredThread {
   sourceId: string;
@@ -15,21 +17,33 @@ export interface DiscoveredThread {
 export interface DiscoveryBatch {
   threads: DiscoveredThread[];
   warnings: string[];
+  sourceOutcomes?: DiscoverySourceOutcome[];
+  irrelevantResultsRejected?: number;
+}
+
+export interface DiscoverySourceOutcome {
+  sourceId: string;
+  query: string;
+  status: "success" | "blocked" | "failed";
+  discoveredCount: number;
+  issueCode?: "http_403" | "rate_limited" | "robots_denied" | "login_required";
 }
 
 export interface DiscoverInput {
   query: string;
   sources: Source[];
+  queryVariants?: string[];
+  maxRequests?: number;
   fetcher?: typeof fetch;
   rateLimiter?: SourceRateLimiter;
 }
 
 const MAX_DISCOVERY_BYTES = 2_000_000;
 const THREAD_PATH = /\/(?:comments|questions|discussions|threads?|topics?|konu|t)\//i;
+const SERGIP_THREAD_PATH = /\/forum\/\d+-[^/]+\.html$/i;
 
 const htmlSearchUrl: Record<string, (query: string) => string> = {
   donanimarsivi: (query) => `https://forum.donanimarsivi.com/ara/?q=${encodeURIComponent(query)}`,
-  donanimhaber: (query) => `https://forum.donanimhaber.com/search?q=${encodeURIComponent(query)}`,
   technopat: (query) => `https://www.technopat.net/sosyal/ara/?q=${encodeURIComponent(query)}`,
   techolay: (query) => `https://techolay.net/sosyal/ara/?q=${encodeURIComponent(query)}`,
   r10: (query) => `https://www.r10.net/search.php?query=${encodeURIComponent(query)}`,
@@ -87,12 +101,20 @@ function normalizeResult(source: Source, value: Omit<DiscoveredThread, "sourceId
   };
 }
 
-async function request(source: Source, url: string, fetcher: typeof fetch, rateLimiter: SourceRateLimiter): Promise<Response> {
+async function request(
+  source: Source,
+  url: string,
+  fetcher: typeof fetch,
+  rateLimiter: SourceRateLimiter,
+  init: RequestInit = {},
+): Promise<Response> {
   await rateLimiter.acquire(source.id, source.rateLimitMs);
   const response = await fetcher(url, {
+    ...init,
     headers: {
       Accept: "application/json,text/html;q=0.9,application/xhtml+xml;q=0.8",
       "User-Agent": "ForumResearchMCP/0.1 (read-only research)",
+      ...init.headers,
     },
     signal: AbortSignal.timeout(15_000),
     redirect: "manual",
@@ -103,6 +125,26 @@ async function request(source: Source, url: string, fetcher: typeof fetch, rateL
   const declaredLength = Number(response.headers.get("content-length"));
   if (Number.isFinite(declaredLength) && declaredLength > MAX_DISCOVERY_BYTES) throw new Error("response exceeded the discovery size limit");
   return response;
+}
+
+async function resolveDonanimhaberMessage(
+  source: Source,
+  id: number,
+  hash: string,
+  fetcher: typeof fetch,
+  rateLimiter: SourceRateLimiter,
+): Promise<string | undefined> {
+  await rateLimiter.acquire(source.id, source.rateLimitMs);
+  const response = await fetcher(`https://search.donanimhaber.com/api/redirect/${encodeURIComponent(id)}/?hash=${encodeURIComponent(hash)}&type=0`, {
+    headers: { Accept: "text/html", "User-Agent": "ForumResearchMCP/0.2 (read-only research)" },
+    signal: AbortSignal.timeout(15_000),
+    redirect: "manual",
+  });
+  if (response.status < 300 || response.status >= 400) return undefined;
+  const location = response.headers.get("location");
+  if (!location) return undefined;
+  const target = new URL(location, "https://forum.donanimhaber.com");
+  return isAllowedResultUrl(target, source) ? target.toString() : undefined;
 }
 
 async function responseText(response: Response): Promise<string> {
@@ -194,6 +236,85 @@ async function discoverGitHub(source: Source, query: string, fetcher: typeof fet
   });
 }
 
+async function discoverDonanimhaber(source: Source, query: string, fetcher: typeof fetch, rateLimiter: SourceRateLimiter): Promise<DiscoveredThread[]> {
+  const response = await request(
+    source,
+    "https://search.donanimhaber.com/api/search/messages/?p=1&order=rank&in=all&type=both&scope=all&daterange=all",
+    fetcher,
+    rateLimiter,
+    { method: "POST", headers: { "Content-Type": "text/plain;charset=UTF-8" }, body: query },
+  );
+  const payload = JSON.parse(await responseText(response)) as {
+    hash?: string;
+    messages?: Array<{ id?: number; topicId?: number; subject?: string; body?: string; dateString?: string }>;
+  };
+  if (!payload.hash) return [];
+  const results: DiscoveredThread[] = [];
+  for (const message of (payload.messages ?? []).slice(0, 5)) {
+    if (!message.id) continue;
+    const url = await resolveDonanimhaberMessage(source, message.id, payload.hash, fetcher, rateLimiter);
+    if (!url) continue;
+    const result = normalizeResult(source, {
+      url,
+      title: message.subject ?? "",
+      snippet: message.body ?? "",
+      publishedAt: message.dateString,
+    });
+    if (result) results.push(result);
+  }
+  return results;
+}
+
+async function discoverCategoryIndex(source: Source, fetcher: typeof fetch, rateLimiter: SourceRateLimiter): Promise<DiscoveredThread[]> {
+  const results: DiscoveredThread[] = [];
+  for (const indexUrl of (source.categoryIndexes ?? []).slice(0, 2)) {
+    const response = await request(source, indexUrl, fetcher, rateLimiter);
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!/text\/html|application\/xhtml\+xml/i.test(contentType)) throw new Error("category index response was not HTML");
+    const html = await responseText(response);
+    const anchor = /<a\b[^>]*\bhref\s*=\s*(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi;
+    for (const match of html.matchAll(anchor)) {
+      let url: URL;
+      try {
+        url = new URL(decodeHtml(match[2]), indexUrl);
+      } catch {
+        continue;
+      }
+      if (!SERGIP_THREAD_PATH.test(url.pathname)) continue;
+      const result = normalizeResult(source, { url: url.toString(), title: match[3], snippet: "" });
+      if (result) results.push(result);
+      if (results.length >= 5) return results;
+    }
+  }
+  return results;
+}
+
+async function discoverSitemap(source: Source, fetcher: typeof fetch, rateLimiter: SourceRateLimiter): Promise<DiscoveredThread[]> {
+  if (!source.sitemapUrl) throw new Error("no sitemap URL is configured");
+  const readSitemap = async (url: string) => responseText(await request(source, url, fetcher, rateLimiter));
+  const root = await readSitemap(source.sitemapUrl);
+  let entries = parseSitemapEntries(root);
+  for (const childUrl of parseSitemapIndex(root).slice(0, 2)) {
+    let child: URL;
+    try {
+      child = new URL(childUrl);
+    } catch {
+      continue;
+    }
+    if (!isAllowedResultUrl(child, source)) continue;
+    entries = [...entries, ...parseSitemapEntries(await readSitemap(child.toString()))];
+  }
+  return entries.slice(0, 30).flatMap((entry) => {
+    const result = normalizeResult(source, {
+      url: entry.url,
+      title: entry.titleHint,
+      snippet: "",
+      publishedAt: entry.publishedAt,
+    });
+    return result ? [result] : [];
+  });
+}
+
 async function discoverHtml(source: Source, query: string, fetcher: typeof fetch, rateLimiter: SourceRateLimiter): Promise<DiscoveredThread[]> {
   const buildUrl = htmlSearchUrl[source.id];
   if (!buildUrl) throw new Error("no direct search adapter is configured");
@@ -229,6 +350,9 @@ async function discoverSource(source: Source, query: string, fetcher: typeof fet
   if (source.id in stackExchangeSite) return discoverStackExchange(source, query, fetcher, rateLimiter);
   if (source.id === "hacker-news") return discoverHackerNews(source, query, fetcher, rateLimiter);
   if (source.id === "github-discussions") return discoverGitHub(source, query, fetcher, rateLimiter);
+  if (source.id === "donanimhaber") return discoverDonanimhaber(source, query, fetcher, rateLimiter);
+  if (source.discoveryStrategy === "category_index") return discoverCategoryIndex(source, fetcher, rateLimiter);
+  if (source.discoveryStrategy === "sitemap") return discoverSitemap(source, fetcher, rateLimiter);
   return discoverHtml(source, query, fetcher, rateLimiter);
 }
 
@@ -245,20 +369,51 @@ function deduplicate(threads: DiscoveredThread[]): DiscoveredThread[] {
 export async function discoverThreads({
   query,
   sources,
+  queryVariants = [],
+  maxRequests,
   fetcher = fetch,
   rateLimiter = defaultRateLimiter,
 }: DiscoverInput): Promise<DiscoveryBatch> {
   if (!sources.length) return { threads: [], warnings: [] };
-  const outcomes = await Promise.all(sources.map(async (source) => {
+  const queries = [...new Set([query, ...queryVariants].map((item) => item.trim()).filter(Boolean))];
+  const attempts = queries.flatMap((queryVariant) => sources.map((source) => ({ source, query: queryVariant })))
+    .slice(0, maxRequests ?? Number.POSITIVE_INFINITY);
+  const outcomes = await Promise.all(attempts.map(async ({ source, query: queryVariant }) => {
     try {
-      return { threads: await discoverSource(source, query, fetcher, rateLimiter) };
+      const rawThreads = await discoverSource(source, queryVariant, fetcher, rateLimiter);
+      const threads = rawThreads.filter((thread) => assessRelevance({
+        query,
+        variants: queryVariants,
+        title: thread.title,
+        text: thread.snippet,
+      }).accepted);
+      return {
+        threads,
+        rejected: rawThreads.length - threads.length,
+        outcome: { sourceId: source.id, query: queryVariant, status: "success" as const, discoveredCount: rawThreads.length },
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : "unknown source error";
-      return { threads: [] as DiscoveredThread[], warning: `${source.displayName} discovery failed: ${message}` };
+      const blocked = /HTTP (?:401|403|429)|captcha|bot challenge/i.test(message);
+      const issueCode = /HTTP 429/i.test(message)
+        ? "rate_limited" as const
+        : /HTTP 401|login/i.test(message)
+          ? "login_required" as const
+          : /robots/i.test(message)
+            ? "robots_denied" as const
+            : "http_403" as const;
+      return {
+        threads: [] as DiscoveredThread[],
+        rejected: 0,
+        outcome: { sourceId: source.id, query: queryVariant, status: blocked ? "blocked" as const : "failed" as const, discoveredCount: 0, issueCode: blocked ? issueCode : undefined },
+        warning: `${source.displayName} discovery failed: ${message}`,
+      };
     }
   }));
   return {
     threads: deduplicate(outcomes.flatMap((outcome) => outcome.threads)),
     warnings: outcomes.flatMap((outcome) => outcome.warning ? [outcome.warning] : []),
+    sourceOutcomes: outcomes.map((outcome) => outcome.outcome),
+    irrelevantResultsRejected: outcomes.reduce((total, outcome) => total + outcome.rejected, 0),
   };
 }
