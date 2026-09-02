@@ -26,7 +26,15 @@ export interface DiscoverySourceOutcome {
   query: string;
   status: "success" | "blocked" | "failed";
   discoveredCount: number;
+  strategy: Source["discoveryStrategy"];
+  attemptOrdinal: number;
   issueCode?: "http_403" | "rate_limited" | "robots_denied" | "login_required";
+}
+
+export interface ScheduledDiscoveryAttempt {
+  source: Source;
+  query: string;
+  attemptOrdinal: number;
 }
 
 export interface DiscoverInput {
@@ -289,6 +297,31 @@ async function discoverCategoryIndex(source: Source, fetcher: typeof fetch, rate
   return results;
 }
 
+async function discoverGcaptainIndex(source: Source, attemptOrdinal: number, fetcher: typeof fetch, rateLimiter: SourceRateLimiter): Promise<DiscoveredThread[]> {
+  const indexes = source.categoryIndexes ?? [];
+  if (!indexes.length) throw new Error("no gCaptain category index is configured");
+  const categoryIndex = indexes[(attemptOrdinal - 1) % indexes.length]!;
+  const page = Math.floor((attemptOrdinal - 1) / indexes.length);
+  const url = new URL(categoryIndex);
+  if (page > 0) url.searchParams.set("page", String(page));
+  const response = await request(source, url.toString(), fetcher, rateLimiter);
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!/application\/json/i.test(contentType)) throw new Error("gCaptain category index response was not JSON");
+  const payload = JSON.parse(await responseText(response)) as {
+    topic_list?: { topics?: Array<{ id?: number; slug?: string; title?: string; excerpt?: string; created_at?: string }> };
+  };
+  return (payload.topic_list?.topics ?? []).flatMap((topic) => {
+    if (!topic.id || !topic.slug) return [];
+    const result = normalizeResult(source, {
+      url: `https://forum.gcaptain.com/t/${encodeURIComponent(topic.slug)}/${encodeURIComponent(topic.id)}`,
+      title: topic.title ?? "",
+      snippet: topic.excerpt ?? "",
+      publishedAt: topic.created_at,
+    });
+    return result ? [result] : [];
+  });
+}
+
 async function discoverSitemap(source: Source, fetcher: typeof fetch, rateLimiter: SourceRateLimiter): Promise<DiscoveredThread[]> {
   if (!source.sitemapUrl) throw new Error("no sitemap URL is configured");
   const readSitemap = async (url: string) => responseText(await request(source, url, fetcher, rateLimiter));
@@ -345,12 +378,13 @@ async function discoverHtml(source: Source, query: string, fetcher: typeof fetch
   return results;
 }
 
-async function discoverSource(source: Source, query: string, fetcher: typeof fetch, rateLimiter: SourceRateLimiter): Promise<DiscoveredThread[]> {
+async function discoverSource(source: Source, query: string, fetcher: typeof fetch, rateLimiter: SourceRateLimiter, attemptOrdinal: number): Promise<DiscoveredThread[]> {
   if (source.id === "reddit" || source.id === "reddit-tr") return discoverReddit(source, query, fetcher, rateLimiter);
   if (source.id in stackExchangeSite) return discoverStackExchange(source, query, fetcher, rateLimiter);
   if (source.id === "hacker-news") return discoverHackerNews(source, query, fetcher, rateLimiter);
   if (source.id === "github-discussions") return discoverGitHub(source, query, fetcher, rateLimiter);
   if (source.id === "donanimhaber") return discoverDonanimhaber(source, query, fetcher, rateLimiter);
+  if (source.id === "gcaptain") return discoverGcaptainIndex(source, attemptOrdinal, fetcher, rateLimiter);
   if (source.discoveryStrategy === "category_index") return discoverCategoryIndex(source, fetcher, rateLimiter);
   if (source.discoveryStrategy === "sitemap") return discoverSitemap(source, fetcher, rateLimiter);
   return discoverHtml(source, query, fetcher, rateLimiter);
@@ -366,6 +400,34 @@ function deduplicate(threads: DiscoveredThread[]): DiscoveredThread[] {
   });
 }
 
+export function scheduleDiscoveryAttempts({
+  queries,
+  sources,
+  maxRequests,
+}: {
+  queries: string[];
+  sources: Source[];
+  maxRequests?: number;
+}): ScheduledDiscoveryAttempt[] {
+  const budget = maxRequests ?? Number.POSITIVE_INFINITY;
+  const attempts: ScheduledDiscoveryAttempt[] = [];
+  if (!queries.length || !sources.length || budget <= 0) return attempts;
+
+  const maxRounds = Number.isFinite(budget)
+    ? Math.min(sources.length, Math.ceil(budget / queries.length))
+    : sources.length;
+  for (let round = 0; round < maxRounds && attempts.length < budget; round += 1) {
+    let scheduledInRound = 0;
+    for (let queryIndex = 0; queryIndex < queries.length && attempts.length < budget; queryIndex += 1) {
+      const source = sources[(queryIndex + round) % sources.length]!;
+      attempts.push({ source, query: queries[queryIndex]!, attemptOrdinal: round + 1 });
+      scheduledInRound += 1;
+    }
+    if (!scheduledInRound) break;
+  }
+  return attempts;
+}
+
 export async function discoverThreads({
   query,
   sources,
@@ -376,11 +438,10 @@ export async function discoverThreads({
 }: DiscoverInput): Promise<DiscoveryBatch> {
   if (!sources.length) return { threads: [], warnings: [] };
   const queries = [...new Set([query, ...queryVariants].map((item) => item.trim()).filter(Boolean))];
-  const attempts = queries.flatMap((queryVariant) => sources.map((source) => ({ source, query: queryVariant })))
-    .slice(0, maxRequests ?? Number.POSITIVE_INFINITY);
-  const outcomes = await Promise.all(attempts.map(async ({ source, query: queryVariant }) => {
+  const attempts = scheduleDiscoveryAttempts({ queries, sources, maxRequests });
+  const outcomes = await Promise.all(attempts.map(async ({ source, query: queryVariant, attemptOrdinal }) => {
     try {
-      const rawThreads = await discoverSource(source, queryVariant, fetcher, rateLimiter);
+      const rawThreads = await discoverSource(source, queryVariant, fetcher, rateLimiter, attemptOrdinal);
       const threads = rawThreads.filter((thread) => assessRelevance({
         query,
         variants: queryVariants,
@@ -390,7 +451,7 @@ export async function discoverThreads({
       return {
         threads,
         rejected: rawThreads.length - threads.length,
-        outcome: { sourceId: source.id, query: queryVariant, status: "success" as const, discoveredCount: rawThreads.length },
+        outcome: { sourceId: source.id, query: queryVariant, status: "success" as const, discoveredCount: rawThreads.length, strategy: source.discoveryStrategy, attemptOrdinal },
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : "unknown source error";
@@ -405,7 +466,7 @@ export async function discoverThreads({
       return {
         threads: [] as DiscoveredThread[],
         rejected: 0,
-        outcome: { sourceId: source.id, query: queryVariant, status: blocked ? "blocked" as const : "failed" as const, discoveredCount: 0, issueCode: blocked ? issueCode : undefined },
+        outcome: { sourceId: source.id, query: queryVariant, status: blocked ? "blocked" as const : "failed" as const, discoveredCount: 0, strategy: source.discoveryStrategy, attemptOrdinal, issueCode: blocked ? issueCode : undefined },
         warning: `${source.displayName} discovery failed: ${message}`,
       };
     }

@@ -15,6 +15,7 @@ export interface SearchInput {
 
 export interface SearchResult {
   query_variants: string[];
+  coverage_complete_for_no_relevant_evidence: boolean;
   locales: Locale[];
   expandedToBoth: boolean;
   threads: DiscoveredThread[];
@@ -57,6 +58,18 @@ export interface Coverage {
   passiveSources: string[];
   irrelevantResultsRejected: number;
   queriesUsed: string[];
+  requestedQueries: string[];
+  executedQueries: string[];
+  perQuery: QueryCoverage[];
+  completeForNoRelevantEvidence: boolean;
+}
+
+export interface QueryCoverage {
+  query: string;
+  attemptedSources: string[];
+  successfulSources: string[];
+  blockedSources: string[];
+  strategies: Source["discoveryStrategy"][];
 }
 
 export interface ForumResearchDependencies {
@@ -134,7 +147,7 @@ export class ForumResearchService {
   }
 
   private async discover(query: string, sources: Source[], queryVariants: string[], maxRequests: number): Promise<DiscoveryBatch> {
-    const cacheKey = `v2:discovery:${query}:${queryVariants.join("|")}:${maxRequests}:${sources.map((source) => source.id).sort().join(",")}`;
+    const cacheKey = `v3:discovery:${query}:${queryVariants.join("|")}:${maxRequests}:${sources.map((source) => source.id).sort().join(",")}`;
     const cached = this.dependencies.cache?.get<DiscoveryBatch | DiscoveredThread[]>(cacheKey);
     if (cached) return this.normalizeDiscovery(cached);
 
@@ -165,7 +178,8 @@ export class ForumResearchService {
         expandedToBoth: false,
         threads: [],
         warnings: ["None of the requested sources are enabled in the forum catalog."],
-        coverage: { attemptedSources: [], successfulSources: [], blockedSources: [], passiveSources: [], irrelevantResultsRejected: 0, queriesUsed: [query, ...queryVariants] },
+        coverage_complete_for_no_relevant_evidence: false,
+        coverage: this.emptyCoverage(query, queryVariants),
         issues: [],
       };
     }
@@ -177,13 +191,15 @@ export class ForumResearchService {
       const threads = deduplicate(outcomes.flatMap((outcome) => outcome.threads));
       const warnings = outcomes.flatMap((outcome) => outcome.warnings);
       if (!threads.length) warnings.push("No eligible forum threads were found for this research scope.");
+      const coverage = this.coverageFor(query, queryVariants, initialLocales, sources, threads, outcomes);
       return {
         locales: initialLocales,
         query_variants: queryVariants,
+        coverage_complete_for_no_relevant_evidence: coverage.completeForNoRelevantEvidence,
         expandedToBoth: false,
         threads,
         warnings,
-        coverage: this.coverageFor(query, queryVariants, initialLocales, sources, threads, outcomes),
+        coverage,
         issues: this.issuesFor(outcomes),
       };
     }
@@ -215,20 +231,54 @@ export class ForumResearchService {
     if (!uniqueThreads.length) warnings.push("No eligible forum threads were found for this research scope.");
     if (expandedToBoth) warnings.push("Initial evidence was limited, so the research expanded to both languages.");
 
+    const coverage = this.coverageFor(query, queryVariants, locales, sources, uniqueThreads, discoveryBatches);
     return {
       locales,
       query_variants: queryVariants,
+      coverage_complete_for_no_relevant_evidence: coverage.completeForNoRelevantEvidence,
       expandedToBoth,
       threads: uniqueThreads,
       warnings,
-      coverage: this.coverageFor(query, queryVariants, locales, sources, uniqueThreads, discoveryBatches),
+      coverage,
       issues: this.issuesFor(discoveryBatches),
+    };
+  }
+
+  private emptyCoverage(query: string, queryVariants: string[]): Coverage {
+    const requestedQueries = [query, ...queryVariants];
+    return {
+      attemptedSources: [], successfulSources: [], blockedSources: [], passiveSources: [], irrelevantResultsRejected: 0,
+      queriesUsed: [], requestedQueries, executedQueries: [],
+      perQuery: requestedQueries.map((requestedQuery) => ({ query: requestedQuery, attemptedSources: [], successfulSources: [], blockedSources: [], strategies: [] })),
+      completeForNoRelevantEvidence: false,
     };
   }
 
   private coverageFor(query: string, queryVariants: string[], locales: Locale[], sourceFilter: string[] | undefined, threads: DiscoveredThread[], batches: DiscoveryBatch[]): Coverage {
     const attemptedSources = sourcesForLocales(locales, sourceFilter).map((source) => source.id);
     const outcomes = batches.flatMap((batch) => batch.sourceOutcomes ?? []);
+    const requestedQueries = [query, ...queryVariants];
+    const perQuery = requestedQueries.map((requestedQuery) => {
+      const matching = outcomes.filter((outcome) => outcome.query === requestedQuery);
+      return {
+        query: requestedQuery,
+        attemptedSources: [...new Set(matching.map((outcome) => outcome.sourceId))],
+        successfulSources: [...new Set(matching.filter((outcome) => outcome.status === "success").map((outcome) => outcome.sourceId))],
+        blockedSources: [...new Set(matching.filter((outcome) => outcome.status === "blocked").map((outcome) => outcome.sourceId))],
+        strategies: [...new Set(matching.map((outcome) => outcome.strategy))],
+      };
+    });
+    const maritimePms = /\b(?:gemi|ship|maritime|vessel)\b/i.test(requestedQueries.join(" "))
+      && /\b(?:bakım|bakim|maintenance|planned|pms)\b/i.test(requestedQueries.join(" "));
+    const hasThreeQuerySearchSources = perQuery.every((item) => item.successfulSources
+      .filter((sourceId) => catalog.find((source) => source.id === sourceId)?.searchCapability === "query_search")
+      .length >= MINIMUM_DISTINCT_SOURCES);
+    const hasMaritimeQuerySearchSource = !maritimePms || perQuery.every((item) => item.successfulSources
+      .some((sourceId) => {
+        const source = catalog.find((candidate) => candidate.id === sourceId);
+        return source?.searchCapability === "query_search" && source.domainTags.includes("maritime");
+      }));
+    const completeForNoRelevantEvidence = hasThreeQuerySearchSources && hasMaritimeQuerySearchSource;
     return {
       attemptedSources,
       successfulSources: outcomes.length
@@ -239,7 +289,11 @@ export class ForumResearchService {
         .filter((source) => locales.includes(source.locale) && !source.enabled && (!sourceFilter?.length || sourceFilter.includes(source.id)))
         .map((source) => source.id),
       irrelevantResultsRejected: batches.reduce((total, batch) => total + (batch.irrelevantResultsRejected ?? 0), 0),
-      queriesUsed: [query, ...queryVariants],
+      queriesUsed: requestedQueries.filter((requestedQuery) => outcomes.some((outcome) => outcome.query === requestedQuery)),
+      requestedQueries,
+      executedQueries: requestedQueries.filter((requestedQuery) => outcomes.some((outcome) => outcome.query === requestedQuery)),
+      perQuery,
+      completeForNoRelevantEvidence,
     };
   }
 
@@ -247,6 +301,22 @@ export class ForumResearchService {
     return batches.flatMap((batch) => (batch.sourceOutcomes ?? []).flatMap((outcome) => outcome.status === "blocked"
       ? [{ stage: "discovery" as const, code: outcome.issueCode ?? "http_403", message: "Source blocked direct discovery.", sourceId: outcome.sourceId }]
       : []));
+  }
+
+  private coverageGapWarning(coverage: Coverage): string {
+    const incompleteQueries = coverage.perQuery
+      .filter((item) => item.successfulSources.length < MINIMUM_DISTINCT_SOURCES)
+      .map((item) => `${item.query} (${item.successfulSources.length}/3 sources)`);
+    const maritimeGap = coverage.requestedQueries.some((requestedQuery) => /\b(?:gemi|ship|maritime|vessel)\b/i.test(requestedQuery))
+      && coverage.perQuery.some((item) => !item.successfulSources.some((sourceId) => {
+        const source = catalog.find((candidate) => candidate.id === sourceId);
+        return source?.searchCapability === "query_search" && source.domainTags.includes("maritime");
+      }));
+    const details = [
+      incompleteQueries.length ? `Incomplete query coverage: ${incompleteQueries.join(", ")}.` : "",
+      maritimeGap ? "No successful maritime query-search source covered every requested query." : "",
+    ].filter(Boolean).join(" ");
+    return `${details} Absence of evidence is not evidence of absence.`.trim();
   }
 
   async research({ depth = "standard", ...input }: ResearchInput): Promise<ResearchResult> {
@@ -319,7 +389,7 @@ export class ForumResearchService {
       ? "ok"
       : evidence.length > 0
         ? "partial"
-        : coverage.successfulSources.length >= MINIMUM_DISTINCT_SOURCES
+        : coverage.completeForNoRelevantEvidence
           ? "no_relevant_evidence"
           : "coverage_limited";
     const coverageWarning = status === "ok"
@@ -328,7 +398,7 @@ export class ForumResearchService {
         ? "Relevant evidence exists, but fewer than three independent sources were read."
         : status === "no_relevant_evidence"
           ? "At least three sources were searched, but no directly read relevant evidence was found."
-          : "Fewer than three sources could be searched successfully; absence of evidence is not evidence of absence.";
+          : this.coverageGapWarning(coverage);
     return {
       ...search,
       locales,
