@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+forum-research.sqlite
+coverage/
+*.tgz
+*.log
+.DS_Store

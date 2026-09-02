@@ -1,0 +1,42 @@
+{
+  "name": "forum-research-mcp",
+  "version": "0.1.0",
+  "description": "Read-only bilingual MCP server for researching public Turkish and English forum discussions.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "npm run test && npm run build",
+    "dev": "tsx src/index.ts",
+    "test": "tsx --test test/**/*.test.ts",
+    "start": "node dist/index.js"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/KaganTiryaki/forum-research-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/KaganTiryaki/forum-research-mcp/issues"
+  },
+  "homepage": "https://github.com/KaganTiryaki/forum-research-mcp#readme",
+  "keywords": [
+    "mcp",
+    "forum-research",
+    "turkish",
+    "research",
+    "model-context-protocol"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.24.0",
+    "zod": "^3.24.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.3"
+  }
+}
