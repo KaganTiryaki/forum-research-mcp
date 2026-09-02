@@ -11,13 +11,10 @@ test("catalog keeps 25 candidates per locale and excludes blocked platforms", as
   assert.equal(new Set(catalog.filter((source) => source.locale === "en").map((source) => source.domains[0])).size, 25);
   assert.equal(catalog.some((source) => source.id === "eksi-sozluk" || source.id === "linkedin"), false);
   assert.deepEqual(catalog.filter((source) => source.enabled).map((source) => source.id), [
-    "donanimarsivi",
-    "technopat",
-    "stack-overflow",
-    "super-user",
-    "server-fault",
-    "hacker-news",
-    "github-discussions",
+    "donanimarsivi", "donanimhaber", "technopat", "sergip",
+    "stack-overflow", "super-user", "server-fault", "hacker-news", "github-discussions",
   ]);
+  assert.equal(catalog.find((source) => source.id === "reddit-tr")?.disabledReason, "http_403");
+  assert.equal(catalog.find((source) => source.id === "denizcilik-fakultesi")?.disabledReason, "login_required");
   assert.ok(catalog.every((source) => source.robotsStatus && source.termsStatus));
 });

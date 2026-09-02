@@ -139,6 +139,38 @@ test("HTML forum discovery keeps only thread links on the selected source domain
   }]);
 });
 
+test("discovery rejects unrelated rules pages before they can be read as evidence", async () => {
+  const fetcher = (async () => new Response(`<!doctype html><html><body>
+    <a href="/konu/forum-kurallari.1/">Forum Kuralları</a>
+    <a href="/konu/gizlilik-bildirimi.2/">Gizlilik Bildirimi</a>
+  </body></html>`, { headers: { "content-type": "text/html" } })) as typeof fetch;
+
+  const result = await discoverThreads({
+    query: "gemi bakım yazılımı kullanıcı deneyimleri",
+    sources: [source("donanimarsivi")],
+    fetcher,
+  });
+
+  assert.deepEqual(result.threads, []);
+  assert.equal(result.irrelevantResultsRejected, 2);
+  assert.equal(result.sourceOutcomes?.[0]?.status, "success");
+});
+
+test("sitemap discovery never follows a child sitemap on another domain", async () => {
+  const requested: string[] = [];
+  const fetcher = (async (input: URL | string) => {
+    requested.push(String(input));
+    return new Response(`<?xml version="1.0"?><sitemapindex>
+      <sitemap><loc>https://evil.example/sitemap.xml</loc></sitemap>
+      <sitemap><loc>https://forum.pchocasi.com.tr/posts.xml</loc></sitemap>
+    </sitemapindex>`, { headers: { "content-type": "application/xml" } });
+  }) as typeof fetch;
+
+  await discoverThreads({ query: "RTX 5070", sources: [source("pc-hocasi")], fetcher });
+
+  assert.equal(requested.some((url) => new URL(url).hostname === "evil.example"), false);
+});
+
 test("HTML discovery reports a 200 bot challenge as a coverage warning", async () => {
   const fetcher = (async () => new Response(`<!doctype html><html><head>
     <title>Just a moment...</title></head><body>Verify you are human</body></html>`, {
@@ -219,6 +251,9 @@ test("every enabled catalog source has a direct discovery adapter", async () => 
         headers: { "content-type": "application/json" },
       });
     }
+    if (hostname === "search.donanimhaber.com") {
+      return new Response(JSON.stringify({ hash: "fixture", messages: [] }), { headers: { "content-type": "application/json" } });
+    }
     return new Response("<!doctype html><html><body>No matches</body></html>", { headers: { "content-type": "text/html" } });
   }) as typeof fetch;
   const enabled = catalog.filter((candidate) => candidate.enabled);
@@ -241,23 +276,34 @@ test("every enabled adapter extracts a canonical thread from a realistic respons
       const site = url.searchParams.get("site");
       const domain = site === "stackoverflow" ? "stackoverflow.com" : `${site}.com`;
       return new Response(JSON.stringify({
-        items: [{ title: `${site} result`, link: `https://${domain}/questions/12345/example`, body: "Answer context", creation_date: 1_725_000_000, score: 3 }],
+        items: [{ title: `${site} adapter fixture`, link: `https://${domain}/questions/12345/example`, body: "Adapter fixture context", creation_date: 1_725_000_000, score: 3 }],
       }), { headers: { "content-type": "application/json" } });
     }
     if (url.hostname === "hn.algolia.com") {
       return new Response(JSON.stringify({
-        hits: [{ objectID: "8863", title: "Hacker News result", story_text: "Story context", created_at: "2007-04-04T00:00:00Z", points: 104 }],
+        hits: [{ objectID: "8863", title: "Hacker News adapter fixture", story_text: "Adapter fixture context", created_at: "2007-04-04T00:00:00Z", points: 104 }],
       }), { headers: { "content-type": "application/json" } });
     }
     if (url.hostname === "github.com") {
       return new Response(JSON.stringify({
-        payload: { blackbirdSearchRoute: { results: [{ title: "GitHub result", body: "Discussion context", url: "/modelcontextprotocol/typescript-sdk/discussions/42", created: "2026-08-17T00:00:00Z", num_comments: 4 }] } },
+        payload: { blackbirdSearchRoute: { results: [{ title: "GitHub adapter fixture", body: "Adapter fixture context", url: "/modelcontextprotocol/typescript-sdk/discussions/42", created: "2026-08-17T00:00:00Z", num_comments: 4 }] } },
       }), { headers: { "content-type": "application/json" } });
+    }
+    if (url.hostname === "search.donanimhaber.com" && url.pathname.includes("/api/search/messages/")) {
+      return new Response(JSON.stringify({
+        hash: "fixture-hash",
+        messages: [{ id: 7, subject: "Adapter fixture", body: "Adapter fixture context" }],
+      }), { headers: { "content-type": "application/json" } });
+    }
+    if (url.hostname === "search.donanimhaber.com" && url.pathname.includes("/api/redirect/")) {
+      return new Response(null, { status: 302, headers: { location: "https://forum.donanimhaber.com/adapter-fixture-konu-7" } });
     }
     const path = url.hostname === "www.technopat.net"
       ? "/sosyal/konu/ekran-karti-deneyimi.12345/"
+      : url.hostname === "sergip.com"
+        ? "/forum/123-adapter-fixture.html"
       : "/konu/ekran-karti-deneyimi.12345/";
-    return new Response(`<html><body><a href="${path}">Ekran kartı kullanıcı deneyimi</a></body></html>`, {
+    return new Response(`<html><body><a href="${path}">Adapter fixture result</a></body></html>`, {
       headers: { "content-type": "text/html" },
     });
   }) as typeof fetch;

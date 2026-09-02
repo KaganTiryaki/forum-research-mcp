@@ -35,14 +35,42 @@ test("research evidence comes from direct thread reads rather than discovery sni
   const service = ForumResearchService
     ? new ForumResearchService({
         discover: async () => [{ sourceId: "donanimarsivi", sourceName: "DA", url: "https://forum.donanimarsivi.com/a", title: "Search title", snippet: "search snippet" }],
-        read: async () => ({ sourceId: "donanimarsivi", sourceName: "DA", url: "https://forum.donanimarsivi.com/a", title: "Thread title", excerpt: "direct page evidence" }),
+        read: async () => ({ sourceId: "donanimarsivi", sourceName: "DA", url: "https://forum.donanimarsivi.com/a", title: "Ekran kartı kullanıcı deneyimi", excerpt: "Ekran kartı için doğrudan sayfa kanıtı" }),
       })
     : undefined;
 
   const result = await service?.research?.({ query: "ekran kartı", locale: "tr" });
 
-  assert.deepEqual(result?.evidence.map(({ excerpt }) => excerpt), ["direct page evidence"]);
+  assert.deepEqual(result?.evidence.map(({ excerpt }) => excerpt), ["Ekran kartı için doğrudan sayfa kanıtı"]);
   assert.match(result?.summary ?? "", /1 directly read thread/i);
+});
+
+test("unhappiest path: six irrelevant system pages are not reported as evidence", async () => {
+  const { ForumResearchService } = await import("../src/research.js");
+  const systemPages = ["Forum Kuralları", "Gizlilik Bildirimi", "Sık Sorulan Sorular", "Kullanım Koşulları", "Üyelik", "Giriş Yap"];
+  const service = new ForumResearchService({
+    discover: async () => systemPages.map((title, index) => ({
+      sourceId: index < 3 ? "technopat" : "donanimarsivi",
+      sourceName: "TR forum",
+      url: `https://forum.example.test/thread-${index}`,
+      title,
+      snippet: "Genel forum yönetim sayfası",
+    })),
+    read: async ({ sourceId, url }) => ({
+      sourceId,
+      sourceName: "TR forum",
+      url,
+      title: systemPages[Number(url.at(-1))]!,
+      excerpt: "Kullanım koşulları, üyelik ve gizlilik bilgileri.",
+    }),
+  });
+
+  const result = await service.research({ query: "gemi bakım yazılımı kullanıcı deneyimleri", locale: "tr", depth: "deep" });
+
+  assert.deepEqual(result.evidence, []);
+  assert.equal(result.status, "coverage_limited");
+  assert.equal(result.coverage.irrelevantResultsRejected, 6);
+  assert.ok(result.issues.some((issue) => issue.code === "irrelevant_result"));
 });
 
 test("search caches discovery metadata instead of repeating identical source requests", async () => {
@@ -62,6 +90,39 @@ test("search caches discovery metadata instead of repeating identical source req
   cache.close();
 
   assert.equal(calls, 1);
+});
+
+test("search normalizes variants and caps discovery requests by depth", async () => {
+  const { ForumResearchService } = await import("../src/research.js");
+  const calls: Array<{ queryVariants?: string[]; maxRequests?: number }> = [];
+  const service = new ForumResearchService({
+    discover: async (input) => {
+      calls.push(input);
+      return { threads: [], warnings: [] };
+    },
+  });
+
+  const result = await service.search({
+    query: "gemi bakım yazılımı",
+    locale: "tr",
+    depth: "quick",
+    queryVariants: [" AMOS gemi bakım ", "AMOS gemi bakım", "ShipManager planned maintenance"],
+  });
+
+  assert.deepEqual(calls[0]?.queryVariants, ["AMOS gemi bakım", "ShipManager planned maintenance"]);
+  assert.equal(calls[0]?.maxRequests, 6);
+  assert.deepEqual(result.coverage.queriesUsed, ["gemi bakım yazılımı", "AMOS gemi bakım", "ShipManager planned maintenance"]);
+});
+
+test("maritime maintenance queries receive bounded specialist variants when none are supplied", async () => {
+  const { ForumResearchService } = await import("../src/research.js");
+  const service = new ForumResearchService({ discover: async () => ({ threads: [], warnings: [] }) });
+
+  const result = await service.search({ query: "gemi bakım yazılımı deneyimleri", locale: "tr", depth: "deep" });
+
+  assert.ok(result.query_variants.includes("AMOS gemi bakım"));
+  assert.ok(result.query_variants.includes("gemi bakım yönetim sistemi"));
+  assert.ok(result.query_variants.length <= 12);
 });
 
 test("auto search survives a failed initial locale by returning fallback-locale results", async () => {
@@ -164,7 +225,7 @@ test("quick research samples distinct sources before reading more threads from o
     },
   });
 
-  const result = await service.research({ query: "source diversity", locale: "en", depth: "quick" });
+  const result = await service.research({ query: "direct evidence", locale: "en", depth: "quick" });
 
   assert.equal(attempted.length, 3);
   assert.ok(attempted.includes("https://news.ycombinator.com/item?id=4"));
@@ -187,7 +248,7 @@ test("auto research expands languages when discovered threads produce no direct 
     },
   });
 
-  const result = await service.research({ query: "Türkiye kullanıcı deneyimi", locale: "auto", depth: "standard" });
+  const result = await service.research({ query: "Türkiye fallback evidence", locale: "auto", depth: "standard" });
 
   assert.deepEqual(result.locales, ["tr", "en"]);
   assert.equal(result.expandedToBoth, true);
