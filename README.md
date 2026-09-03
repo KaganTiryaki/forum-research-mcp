@@ -32,7 +32,7 @@ npm run build
 
 No environment variables are required.
 
-To update an existing checkout to v0.2.2:
+To update an existing checkout to v0.2.3:
 
 ```bash
 git pull --ff-only
@@ -40,11 +40,11 @@ npm ci
 npm run build
 ```
 
-Restart the MCP host after rebuilding.
+Restart the MCP host after rebuilding. Run `node bin/serve.mjs --check` to confirm the installed version and that the compiled server is current.
 
 ## Connect an MCP host
 
-Point your MCP host at the compiled entry file with an absolute path.
+Point your MCP host at the source-aware launcher with an absolute path. It rebuilds silently before launching, so a `git pull` cannot leave the host running an old ignored `dist/` directory. Do not point a production MCP configuration directly at `dist/index.js`.
 
 ### Codex
 
@@ -53,11 +53,11 @@ Add this to your Codex `config.toml`, replacing the paths with the location wher
 ```toml
 [mcp_servers.forum-research]
 command = "node"
-args = ["C:\\absolute\\path\\forum-research-mcp\\dist\\index.js"]
+args = ["C:\\absolute\\path\\forum-research-mcp\\bin\\serve.mjs"]
 cwd = "C:\\absolute\\path\\forum-research-mcp"
 ```
 
-On macOS or Linux, use normal absolute paths such as `/home/you/forum-research-mcp/dist/index.js`.
+On macOS or Linux, use normal absolute paths such as `/home/you/forum-research-mcp/bin/serve.mjs`.
 
 ### JSON-based MCP hosts
 
@@ -68,7 +68,7 @@ Hosts such as Cursor use the same command in a JSON configuration:
   "mcpServers": {
     "forum-research": {
       "command": "node",
-      "args": ["/absolute/path/forum-research-mcp/dist/index.js"],
+      "args": ["/absolute/path/forum-research-mcp/bin/serve.mjs"],
       "cwd": "/absolute/path/forum-research-mcp"
     }
   }
@@ -128,7 +128,7 @@ Lists every active and passive candidate, its language, read and discovery domai
 
 ## Source catalog
 
-The catalog contains 25 Turkish and 25 English candidates. It is an auditable candidate list, not a promise that 25 sources are active. The enabled sources in v0.2.2 are:
+The catalog contains 25 Turkish and 25 English candidates. It is an auditable candidate list, not a promise that 25 sources are active. The enabled sources in v0.2.3 are:
 
 | Language | Source | Discovery method | Read domain |
 | --- | --- | --- | --- |
@@ -172,20 +172,20 @@ Useful commands:
 
 - `npm run dev` — run the TypeScript entry during development
 - `npm run build` — compile to `dist/`
-- `npm start` — run the compiled stdio server
+- `npm start` — rebuild silently, then run the stdio server
 - `npm test` — run the automated suite
 
 The MCP Inspector can also launch the compiled server:
 
 ```bash
-npx @modelcontextprotocol/inspector node dist/index.js
+npx @modelcontextprotocol/inspector node bin/serve.mjs
 ```
 
 Do not print logs to stdout: stdio MCP uses stdout for its protocol messages.
 
 ## Türkçe kısa açıklama
 
-Bu proje, Türkçe ve İngilizce açık forum başlıklarını araştıran yerel ve salt-okunur bir MCP sunucusudur. API anahtarı istemez; giriş yapmaz, CAPTCHA aşmaz ve içerik yayımlamaz. Kurulum için depoyu klonlayın, `npm ci` ve `npm run build` çalıştırın, ardından MCP istemcinizi `dist/index.js` dosyasına yönlendirin.
+Bu proje, Türkçe ve İngilizce açık forum başlıklarını araştıran yerel ve salt-okunur bir MCP sunucusudur. API anahtarı istemez; giriş yapmaz, CAPTCHA aşmaz ve içerik yayımlamaz. Kurulum için depoyu klonlayın, `npm ci` ve `npm run build` çalıştırın, ardından MCP istemcinizi `bin/serve.mjs` dosyasına yönlendirin.
 
 ## License
 
