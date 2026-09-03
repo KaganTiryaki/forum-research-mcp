@@ -12,6 +12,11 @@ export interface RelevanceAssessment {
   score: number;
 }
 
+export interface DiscoveryCandidateClassification {
+  kind: "accepted" | "related" | "rejected";
+  assessment: RelevanceAssessment;
+}
+
 const STOP_WORDS = new Set([
   "acaba", "ama", "bir", "bu", "cok", "da", "daha", "de", "deneyim", "deneyimleri",
   "en", "gibi", "hakkinda", "hangi", "icin", "ile", "iste", "kullanici", "kullanicilari",
@@ -28,6 +33,10 @@ const MARITIME_CANDIDATE_TERMS = ["gemi", "ship", "shipboard", "vessel", "marine
 const MAINTENANCE_WORKFLOW_TERMS = [
   "bakim", "maintenance", "planned maintenance", "work list", "work lists", "work order", "cmms", "pms",
   "inventory", "spare parts", "inspection", "audit",
+];
+const MARITIME_OPERATION_SOFTWARE_TERMS = [
+  "software", "report", "reporting", "noon report", "daily report", "fleet management", "vessel management",
+  "api", "database", "integration", "dashboard", "workflow", "operations", "operation", "logbook",
 ];
 
 export function normalizeForRelevance(value: string): string {
@@ -108,4 +117,28 @@ export function assessDiscoveryCandidate(input: RelevanceInput & { domainTags: s
   return hasMaritimeTerm && hasWorkflowTerm
     ? { accepted: true, reason: "domain_candidate", matchedTerms: [], score: maritimeMatches.length + workflowMatches.length }
     : strict;
+}
+
+export function classifyDiscoveryCandidate(input: RelevanceInput & { domainTags: string[] }): DiscoveryCandidateClassification {
+  const strict = assessDiscoveryCandidate(input);
+  const candidate = normalizeForRelevance(`${input.title} ${input.text}`);
+  const requestedTerms = normalizeForRelevance([input.query, ...(input.variants ?? [])].join(" "));
+  const isMaritimeMaintenanceResearch = /\b(?:gemi|ship|vessel|maritime|marine)\b/.test(requestedTerms)
+    && /\b(?:bakim|maintenance|planned maintenance|pms|cmms)\b/.test(requestedTerms);
+  const hasMaintenanceWorkflow = MAINTENANCE_WORKFLOW_TERMS.some((term) => candidate.includes(term));
+  const hasMaritimeContext = MARITIME_CANDIDATE_TERMS.some((term) => candidate.includes(term));
+  const hasOperationsSoftware = MARITIME_OPERATION_SOFTWARE_TERMS.some((term) => candidate.includes(term));
+
+  if (strict.accepted && (!isMaritimeMaintenanceResearch || hasMaintenanceWorkflow)) {
+    return { kind: "accepted", assessment: strict };
+  }
+
+  if (!input.domainTags.includes("maritime")
+    || ["system_page", "non_experience_page", "ambiguous_short_term"].includes(strict.reason)) {
+    return { kind: "rejected", assessment: strict };
+  }
+
+  if (!hasMaritimeContext || !hasOperationsSoftware) return { kind: "rejected", assessment: strict };
+
+  return { kind: "related", assessment: strict };
 }

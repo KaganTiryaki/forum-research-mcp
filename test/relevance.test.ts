@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assessDiscoveryCandidate, assessRelevance } from "../src/relevance.js";
+import { assessDiscoveryCandidate, assessRelevance, classifyDiscoveryCandidate } from "../src/relevance.js";
 
 test("rejects rules, privacy, and FAQ pages for ordinary product research", () => {
   const result = assessRelevance({
@@ -90,4 +90,27 @@ test("maritime sampled-index recall does not admit unrelated port announcements"
   });
 
   assert.equal(result.accepted, false);
+});
+
+test("classifies vessel-to-shore reporting as a related maritime software lead", () => {
+  const result = classifyDiscoveryCandidate({
+    query: "gemi bakım yazılımı kullanıcı deneyimleri",
+    variants: ["vessel-to-shore reporting software"],
+    title: "Looking for suggestions for vessel to shore reporting software",
+    text: "Need daily reports from ship to office.",
+    domainTags: ["maritime", "professional"],
+  });
+
+  assert.equal(result.kind, "related");
+});
+
+test("classifies a ship-engineering career page as rejected rather than a related lead", () => {
+  const result = classifyDiscoveryCandidate({
+    query: "gemi bakım yazılımı kullanıcı deneyimleri",
+    title: "Gemi İnşaatı ve Gemi Makineleri Mühendisliği Bölümü Bilgi",
+    text: "Kariyer fırsatları ve bölüm hakkında sorular.",
+    domainTags: ["maritime"],
+  });
+
+  assert.equal(result.kind, "rejected");
 });
