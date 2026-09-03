@@ -7,7 +7,7 @@ export interface RelevanceInput {
 
 export interface RelevanceAssessment {
   accepted: boolean;
-  reason: "relevant" | "domain_candidate" | "insufficient_term_overlap" | "system_page" | "non_experience_page" | "ambiguous_short_term";
+  reason: "relevant" | "domain_candidate" | "insufficient_term_overlap" | "system_page" | "non_experience_page" | "non_user_narrative" | "ambiguous_short_term";
   matchedTerms: string[];
   score: number;
 }
@@ -27,6 +27,10 @@ const STOP_WORDS = new Set([
 
 const SYSTEM_PAGE_PATTERN = /\b(?:kurallar?|gizlilik(?:\s+bildirimi)?|sik\s+sorulan\s+sorular|sss|faq|kullanim\s+kosullari|uyelik|giris(?:\s+yap)?|kayit(?:\s+ol)?|privacy|terms?(?:\s+of\s+service)?|sign\s*in|log\s*in)\b/i;
 const NON_EXPERIENCE_PAGE_PATTERN = /\b(?:job\s+posting|job\s+opening|career\s+opportunit|recruit(?:er)?s?|recruitment|recruiting|we\s+are\s+hiring|apply\s+now|position\s+available|is\s+seeking|vacanc(?:y|ies)|ilan(?:i|lar)?|is\s+ilan(?:i|lari)|basvuru)\b/i;
+const JOB_TITLE_WITH_EMPLOYER_PATTERN = /\b(?:engineer|technician|coordinator|director|supervisor|manager)\b[\s\S]{0,120}\b(?:recruit|consultancy|llc|ltd|inc\b|university|services|position|vacancy)\b/i;
+const JOB_TITLE_PATTERN = /\b(?:engineer|technician|coordinator|director|supervisor|manager|mechanic|assistant)\b/i;
+const ANNOUNCEMENT_PATTERN = /\b(?:announc(?:e|ed|ement)|press\s+release|notice\s+of\s+proposed|rulemaking|authority|ntsb|mca\s+highlights|releases?\s+(?:a|the)\s+report|duyuru|basin\s+bulteni|teblig|yonetmelik)\b/i;
+const USER_NARRATIVE_PATTERN = /\b(?:i\s+(?:use|used|am\s+using|prefer|recommend|hate|love)|we\s+(?:use|used|are\s+using|prefer|recommend)|my\s+experience|our\s+experience|user\s+experience|experience(?:\s+with)?|kullaniyorum|kullandim|kullandık|kullaniyoruz|kullaniyoruz|deneyim\w*|oner(?:irim|iyorum)|memnunum|nefret\s+ettim)\b/i;
 const AMBIGUOUS_SHORT_TERMS = new Set(["amos", "pms"]);
 const CONTEXT_TERMS = new Set(["gemi", "bakim", "yazilim", "ship", "maritime", "maintenance", "vessel"]);
 const MARITIME_CANDIDATE_TERMS = ["gemi", "ship", "shipboard", "vessel", "marine", "maritime", "engine", "deck"];
@@ -34,9 +38,12 @@ const MAINTENANCE_WORKFLOW_TERMS = [
   "bakim", "maintenance", "planned maintenance", "work list", "work lists", "work order", "cmms", "pms",
   "inventory", "spare parts", "inspection", "audit",
 ];
-const MARITIME_OPERATION_SOFTWARE_TERMS = [
-  "software", "report", "reporting", "noon report", "daily report", "fleet management", "vessel management",
-  "api", "database", "integration", "dashboard", "workflow", "operations", "operation", "logbook",
+const DIRECT_MARITIME_WORKFLOW_TERMS = [
+  "maintenance", "planned maintenance", "work list", "work order", "cmms", "pms", "maintenance tracking",
+];
+const MARITIME_OPERATION_WORKFLOW_TERMS = [
+  "fleet management", "vessel management", "crew management", "ship management", "vessel-to-shore", "vessel to shore",
+  "noon report", "reporting", "maintenance", "planned maintenance", "shipboard", "logbook",
 ];
 
 export function normalizeForRelevance(value: string): string {
@@ -77,7 +84,8 @@ export function assessRelevance({ query, variants = [], title, text }: Relevance
   if (SYSTEM_PAGE_PATTERN.test(candidate) && !containsRequestedSystemInfo(query)) {
     return { accepted: false, reason: "system_page", matchedTerms: [], score: 0 };
   }
-  if (NON_EXPERIENCE_PAGE_PATTERN.test(candidate) && !/\b(?:job|career|recruit|ilan|basvuru)\b/i.test(normalizeForRelevance(query))) {
+  if ((NON_EXPERIENCE_PAGE_PATTERN.test(candidate) || JOB_TITLE_WITH_EMPLOYER_PATTERN.test(candidate))
+    && !/\b(?:job|career|recruit|ilan|basvuru)\b/i.test(normalizeForRelevance(query))) {
     return { accepted: false, reason: "non_experience_page", matchedTerms: [], score: 0 };
   }
 
@@ -120,14 +128,20 @@ export function assessDiscoveryCandidate(input: RelevanceInput & { domainTags: s
 }
 
 export function classifyDiscoveryCandidate(input: RelevanceInput & { domainTags: string[] }): DiscoveryCandidateClassification {
-  const strict = assessDiscoveryCandidate(input);
+  const strict = assessRelevance(input);
   const candidate = normalizeForRelevance(`${input.title} ${input.text}`);
+  const title = normalizeForRelevance(input.title);
   const requestedTerms = normalizeForRelevance([input.query, ...(input.variants ?? [])].join(" "));
   const isMaritimeMaintenanceResearch = /\b(?:gemi|ship|vessel|maritime|marine)\b/.test(requestedTerms)
     && /\b(?:bakim|maintenance|planned maintenance|pms|cmms)\b/.test(requestedTerms);
-  const hasMaintenanceWorkflow = MAINTENANCE_WORKFLOW_TERMS.some((term) => candidate.includes(term));
+  const hasMaintenanceWorkflow = DIRECT_MARITIME_WORKFLOW_TERMS.some((term) => candidate.includes(term));
   const hasMaritimeContext = MARITIME_CANDIDATE_TERMS.some((term) => candidate.includes(term));
-  const hasOperationsSoftware = MARITIME_OPERATION_SOFTWARE_TERMS.some((term) => candidate.includes(term));
+  const hasOperationsWorkflow = MARITIME_OPERATION_WORKFLOW_TERMS.some((term) => candidate.includes(term));
+  const hasSoftwareProductSignal = candidate.includes("software");
+
+  if (JOB_TITLE_PATTERN.test(title) || ANNOUNCEMENT_PATTERN.test(candidate)) {
+    return { kind: "rejected", assessment: { ...strict, accepted: false, reason: "non_experience_page" } };
+  }
 
   if (strict.accepted && (!isMaritimeMaintenanceResearch || hasMaintenanceWorkflow)) {
     return { kind: "accepted", assessment: strict };
@@ -138,7 +152,23 @@ export function classifyDiscoveryCandidate(input: RelevanceInput & { domainTags:
     return { kind: "rejected", assessment: strict };
   }
 
-  if (!hasMaritimeContext || !hasOperationsSoftware) return { kind: "rejected", assessment: strict };
+  if (isMaritimeMaintenanceResearch && hasMaritimeContext && hasMaintenanceWorkflow) {
+    return { kind: "accepted", assessment: { ...strict, accepted: true, reason: "domain_candidate", score: strict.score + 2 } };
+  }
+
+  if (!hasMaritimeContext || !hasOperationsWorkflow || !hasSoftwareProductSignal) {
+    return { kind: "rejected", assessment: strict };
+  }
 
   return { kind: "related", assessment: strict };
+}
+
+export function assessEvidenceRelevance(input: RelevanceInput): RelevanceAssessment {
+  const strict = assessRelevance(input);
+  if (!strict.accepted) return strict;
+  const candidate = normalizeForRelevance(`${input.title} ${input.text}`);
+  if (ANNOUNCEMENT_PATTERN.test(candidate) || !USER_NARRATIVE_PATTERN.test(candidate)) {
+    return { ...strict, accepted: false, reason: "non_user_narrative" };
+  }
+  return strict;
 }

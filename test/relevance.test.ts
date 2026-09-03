@@ -104,12 +104,84 @@ test("classifies vessel-to-shore reporting as a related maritime software lead",
   assert.equal(result.kind, "related");
 });
 
+test("does not classify generic marine operations reports as related software leads", () => {
+  const result = classifyDiscoveryCandidate({
+    title: "National maritime centers monthly reports performance",
+    text: "Marine operations centre monthly report",
+    query: "gemi bakım yazılımı kullanıcı deneyimleri",
+    variants: ["vessel-to-shore reporting software"],
+    domainTags: ["maritime", "professional"],
+  });
+
+  assert.equal(result.kind, "rejected");
+});
+
+test("does not classify unrelated maritime software as a maintenance-adjacent lead", () => {
+  const result = classifyDiscoveryCandidate({
+    title: "Problems with Capt Joe's deck license software",
+    text: "Maritime exam preparation software discussion",
+    query: "gemi bakım yazılımı kullanıcı deneyimleri",
+    variants: ["vessel management software"],
+    domainTags: ["maritime", "professional"],
+  });
+
+  assert.equal(result.kind, "rejected");
+});
+
 test("classifies a ship-engineering career page as rejected rather than a related lead", () => {
   const result = classifyDiscoveryCandidate({
     query: "gemi bakım yazılımı kullanıcı deneyimleri",
     title: "Gemi İnşaatı ve Gemi Makineleri Mühendisliği Bölümü Bilgi",
     text: "Kariyer fırsatları ve bölüm hakkında sorular.",
     domainTags: ["maritime"],
+  });
+
+  assert.equal(result.kind, "rejected");
+});
+
+test("does not promote a vessel inspection notice to a maritime software candidate", () => {
+  const result = classifyDiscoveryCandidate({
+    query: "gemi bakım yazılımı kullanıcı deneyimleri",
+    variants: ["planned maintenance system PMS", "vessel management software"],
+    title: "Towing vessel inspections look like maybe not",
+    text: "Inspection rules and notice requirements.",
+    domainTags: ["maritime", "professional"],
+  });
+
+  assert.equal(result.kind, "rejected");
+});
+
+test("does not restore a maritime job posting through the maintenance fallback", () => {
+  const result = classifyDiscoveryCandidate({
+    query: "gemi bakım yazılımı kullanıcı deneyimleri",
+    variants: ["ShipManager planned maintenance"],
+    title: "Planned maintenance engineer - Red The Consultancy Glasgow",
+    text: "Position available for a maintenance engineer.",
+    domainTags: ["maritime", "professional"],
+  });
+
+  assert.equal(result.kind, "rejected");
+});
+
+test("rejects a maritime maintenance job title without an employer keyword", () => {
+  const result = classifyDiscoveryCandidate({
+    query: "gemi bakım yazılımı kullanıcı deneyimleri",
+    variants: ["planned maintenance system PMS"],
+    title: "Director of vessel maintenance preservation engineering",
+    text: "",
+    domainTags: ["maritime", "professional"],
+  });
+
+  assert.equal(result.kind, "rejected");
+});
+
+test("rejects an NTSB maintenance news item before it becomes a read candidate", () => {
+  const result = classifyDiscoveryCandidate({
+    query: "gemi bakım yazılımı kullanıcı deneyimleri",
+    variants: ["planned maintenance system PMS"],
+    title: "NTSB critical maintenance error leads to engine room fire",
+    text: "Official accident report.",
+    domainTags: ["maritime", "professional"],
   });
 
   assert.equal(result.kind, "rejected");

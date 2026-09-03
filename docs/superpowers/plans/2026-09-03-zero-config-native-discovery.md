@@ -18,7 +18,7 @@
 - Related leads are metadata only and must never enter direct-reading, evidence, status, or coverage-completeness calculations.
 - Keep the normalized caller/default variant list at twelve values at most.
 - Preserve the existing public tool input schema; new result fields are additive.
-- Use `v5:` cache keys for the changed discovery result schema.
+- Use `v11:` cache keys for the changed discovery result schema.
 
 ---
 
@@ -158,7 +158,7 @@ Merge caller variants before suggested variants, deduplicate with the current Tu
 
 - [ ] **Step 4: Version the discovery cache**
 
-Change the cache key prefix from `v4:` to `v5:` and add a test that a `v4:` entry is not read as a `v5:` result.
+Change the cache key prefix from `v10:` to `v11:` and add a test that a `v10:` entry is not read as a `v11:` result.
 
 - [ ] **Step 5: Run focused research and cache tests**
 

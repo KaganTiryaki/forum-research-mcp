@@ -17,7 +17,7 @@ Discovery returns two distinct collections:
 - `threads`: candidates that passed the relevance gate and may be directly read.
 - `related_leads`: at most twelve source-linked public candidates that are topically adjacent but fail the user-experience relevance gate. Each lead includes `sourceId`, title, URL, date if available, and a machine-readable exclusion reason. They are navigation aids, never evidence and never eligible for direct reading in `forum_research`.
 
-The DonanımHaber ship-engineering topic is therefore eligible to appear as a related lead for a maritime research family but cannot turn into product-experience evidence. Result copy must explicitly say that zero evidence does not mean that related leads are absent.
+The DonanımHaber ship-engineering topic is not product-experience evidence and is rejected unless its title and content independently meet the selected research intent. Result copy must explicitly say that zero evidence does not mean that related leads are absent.
 
 Coverage adds `nativeDiscovery` with the public source surfaces actually attempted, the number of candidates found, accepted, and retained as related leads. An issue with code `source_search_missed` identifies a source-native search that succeeded but produced no relevant candidate. Existing `coverage_limited`, access-block, and robots reporting remain unchanged.
 
@@ -28,10 +28,10 @@ Coverage adds `nativeDiscovery` with the public source surfaces actually attempt
 `src/discovery.ts` schedules direct query searches first, then uses spare budget to sample native indexes. Index parsing produces only title, canonical source URL, and date metadata. It never saves page bodies. Every candidate is classified by `src/relevance.ts` as `accepted`, `related`, or `rejected`:
 
 - Accepted candidates retain today's strict product/user-experience gate.
-- Related candidates must have maritime context plus a software/operations/workflow term, but must not be rules, login, privacy, recruitment, or unrelated engineering discussion. They are capped and returned only as `related_leads`.
+- Related candidates must have maritime context, an explicit software product signal, and a named operations workflow (for example vessel management or vessel-to-shore reporting). Rules, login, privacy, recruitment, official notices, news, and unrelated engineering discussions are rejected. Related candidates are capped and returned only as `related_leads`.
 - Rejected candidates are counted only in coverage.
 
-`src/research.ts` reads accepted threads only. It merges and deduplicates related leads across locales but never uses them for evidence, status, source diversity, or negative-evidence completeness. Its cache namespace changes to `v5:` because discovery payload structure changes.
+`src/research.ts` reads accepted threads only. It merges and deduplicates related leads across locales but never uses them for evidence, status, source diversity, or negative-evidence completeness. It applies a final user-narrative gate, rejecting job ads, official notices, and news even when their wording matches. Its cache namespace changes to `v11:` because discovery payload structure and final candidate classification change.
 
 ## Catalog policy
 

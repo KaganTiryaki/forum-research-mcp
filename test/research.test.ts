@@ -45,6 +45,31 @@ test("research evidence comes from direct thread reads rather than discovery sni
   assert.match(result?.summary ?? "", /1 directly read thread/i);
 });
 
+test("research rejects a matching maintenance announcement without a user narrative", async () => {
+  const { ForumResearchService } = await import("../src/research.js");
+  const service = new ForumResearchService({
+    discover: async () => [{
+      sourceId: "gcaptain",
+      sourceName: "gCaptain",
+      url: "https://forum.gcaptain.com/t/maintenance-announcement/1",
+      title: "Ship maintenance software announcement",
+      snippet: "Software announcement",
+    }],
+    read: async ({ sourceId, url }) => ({
+      sourceId,
+      sourceName: "gCaptain",
+      url,
+      title: "Ship maintenance software announcement",
+      excerpt: "The authority announced new ship maintenance software requirements.",
+    }),
+  });
+
+  const result = await service.research({ query: "ship maintenance software", locale: "en" });
+
+  assert.deepEqual(result.evidence, []);
+  assert.ok(result.issues.some((issue) => issue.code === "irrelevant_result"));
+});
+
 test("research passes the primary query and variants to focused direct reads", async () => {
   const { ForumResearchService } = await import("../src/research.js");
   let capturedFocus: { query: string; variants: string[] } | undefined;
@@ -96,7 +121,7 @@ test("default maritime variants remain available to the direct evidence gate", a
       sourceName: "gCaptain",
       url,
       title: "Generating and maintaining shipboard work lists",
-      excerpt: "NS5 maintenance and the Planned Maintenance System reduce forgotten jobs during crew handover.",
+      excerpt: "We use NS5 maintenance and the Planned Maintenance System to reduce forgotten jobs during crew handover.",
     }),
   });
 
@@ -252,7 +277,7 @@ test("related leads never become research evidence", async () => {
   assert.equal(result.status, "coverage_limited");
 });
 
-test("discovery cache ignores the prior v4 discovery payload", async () => {
+test("discovery cache ignores the prior v10 discovery payload", async () => {
   const { ForumResearchService } = await import("../src/research.js");
   const keysRead: string[] = [];
   const cache = {
@@ -266,7 +291,7 @@ test("discovery cache ignores the prior v4 discovery payload", async () => {
 
   await service.search({ query: "cache version", locale: "tr" });
 
-  assert.match(keysRead[0] ?? "", /^v5:discovery:/);
+  assert.match(keysRead[0] ?? "", /^v11:discovery:/);
 });
 
 test("a successful source-native search with no candidates is reported as a discovery miss", async () => {
@@ -505,7 +530,7 @@ test("quick research samples distinct sources before reading more threads from o
     read: async ({ sourceId, url }) => {
       attempted.push(url);
       if (sourceId === "stack-overflow") throw new Error("blocked");
-      return { sourceId, sourceName: "HN", url, title: "D", excerpt: "direct evidence" };
+      return { sourceId, sourceName: "HN", url, title: "D", excerpt: "I use this direct evidence workflow." };
     },
   });
 
@@ -528,7 +553,7 @@ test("auto research expands languages when discovered threads produce no direct 
       : [{ sourceId: "hacker-news", sourceName: "HN", url: "https://news.ycombinator.com/item?id=5", title: "Fallback", snippet: "" }],
     read: async ({ sourceId, url }) => {
       if (sourceId !== "hacker-news") throw new Error("initial locale blocked");
-      return { sourceId, sourceName: "HN", url, title: "Fallback", excerpt: "readable fallback evidence" };
+      return { sourceId, sourceName: "HN", url, title: "Fallback", excerpt: "We use the readable fallback evidence workflow." };
     },
   });
 

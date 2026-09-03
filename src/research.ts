@@ -3,7 +3,7 @@ import type { ResearchCache } from "./cache.js";
 import type { DiscoveredThread, DiscoveryBatch, RelatedLead } from "./discovery.js";
 import type { ThreadEvidence } from "./reader.js";
 import type { ReadFocus } from "./discourse.js";
-import { assessRelevance } from "./relevance.js";
+import { assessEvidenceRelevance } from "./relevance.js";
 import { secondaryLocale, selectInitialLocales, type Locale, type LocalePreference } from "./routing.js";
 
 export interface SearchInput {
@@ -185,7 +185,7 @@ export class ForumResearchService {
   }
 
   private async discover(query: string, sources: Source[], queryVariants: string[], maxRequests: number): Promise<DiscoveryBatch> {
-    const cacheKey = `v5:discovery:${query}:${queryVariants.join("|")}:${maxRequests}:${sources.map((source) => source.id).sort().join(",")}`;
+    const cacheKey = `v11:discovery:${query}:${queryVariants.join("|")}:${maxRequests}:${sources.map((source) => source.id).sort().join(",")}`;
     const cached = this.dependencies.cache?.get<DiscoveryBatch | DiscoveredThread[]>(cacheKey);
     if (cached) return this.normalizeDiscovery(cached);
 
@@ -455,7 +455,7 @@ export class ForumResearchService {
               query: input.query,
               variants: evidenceVariants,
             });
-            const relevance = assessRelevance({
+            const relevance = assessEvidenceRelevance({
               query: input.query,
               variants: evidenceVariants,
               title: direct.title,

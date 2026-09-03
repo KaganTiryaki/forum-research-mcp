@@ -81,7 +81,7 @@ See the official MCP guide for [connecting stdio servers to real hosts](https://
 
 ### `forum_search`
 
-Discovers relevant public threads. Discovery snippets are navigation metadata and are not treated as research evidence. `related_leads` lists up to twelve adjacent public discussions that may help a person navigate the topic, but did not meet the product-experience evidence gate; the server never reads them automatically or presents them as findings.
+Discovers relevant public threads. Discovery snippets are navigation metadata and are not treated as research evidence. `related_leads` lists up to twelve adjacent public discussions that may help a person navigate the topic, but did not meet the product-experience evidence gate; the server never reads them automatically or presents them as findings. A direct page becomes evidence only after it passes both the topical check and a user-narrative check; job ads, official notices, news, rules, and privacy pages are discarded.
 
 ```json
 {
