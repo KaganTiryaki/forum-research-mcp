@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assessRelevance } from "../src/relevance.js";
+import { assessDiscoveryCandidate, assessRelevance } from "../src/relevance.js";
 
 test("rejects rules, privacy, and FAQ pages for ordinary product research", () => {
   const result = assessRelevance({
@@ -11,6 +11,18 @@ test("rejects rules, privacy, and FAQ pages for ordinary product research", () =
 
   assert.equal(result.accepted, false);
   assert.equal(result.reason, "system_page");
+});
+
+test("rejects recruitment posts for ordinary product-experience research", () => {
+  const result = assessRelevance({
+    query: "gemi bakım yazılımı kullanıcı deneyimleri",
+    variants: ["NS5 ship maintenance", "planned maintenance system PMS"],
+    title: "Senior Maintenance Engineer - Maritime Recruiters",
+    text: "The candidate shall be proficient in planned maintenance tracking and reporting systems.",
+  });
+
+  assert.equal(result.accepted, false);
+  assert.equal(result.reason, "non_experience_page");
 });
 
 test("does not mistake Tori Amos for maritime maintenance software", () => {
@@ -53,4 +65,29 @@ test("allows system pages when the query explicitly asks about them", () => {
   });
 
   assert.equal(result.accepted, true);
+});
+
+test("maritime sampled indexes admit shipboard work-list titles for direct verification", () => {
+  const result = assessDiscoveryCandidate({
+    query: "gemi bakım yazılımı kullanıcı deneyimleri",
+    variants: ["NS5 ship maintenance", "planned maintenance system PMS"],
+    title: "Generating and maintaining shipboard work lists",
+    text: "",
+    domainTags: ["maritime", "professional"],
+  });
+
+  assert.equal(result.accepted, true);
+  assert.equal(result.reason, "domain_candidate");
+});
+
+test("maritime sampled-index recall does not admit unrelated port announcements", () => {
+  const result = assessDiscoveryCandidate({
+    query: "gemi bakım yazılımı kullanıcı deneyimleri",
+    variants: ["NS5 ship maintenance", "planned maintenance system PMS"],
+    title: "Port authority announces a new terminal",
+    text: "Shipping traffic and berth capacity news.",
+    domainTags: ["maritime", "professional"],
+  });
+
+  assert.equal(result.accepted, false);
 });

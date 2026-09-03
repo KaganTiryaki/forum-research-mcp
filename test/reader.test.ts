@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { readThread } from "../src/reader.js";
 import { SourceRateLimiter } from "../src/rate-limit.js";
 
 const noWaitLimiter = () => new SourceRateLimiter(() => 0, async () => undefined);
+const gcaptainTopicHtml = readFileSync(new URL("./fixtures/gcaptain/topic-63622.html", import.meta.url), "utf8");
+const gcaptainTopicJson = readFileSync(new URL("./fixtures/gcaptain/topic-63622.json", import.meta.url), "utf8");
 
 test("thread reader rejects URLs outside the source allowlist", async () => {
   const module = await import("../src/reader.js").catch(() => ({}));
@@ -82,6 +85,30 @@ test("thread reader prefers forum post content over navigation and cookie chrome
 
   assert.match(evidence.excerpt, /^Actual first-hand user experience/);
   assert.doesNotMatch(evidence.excerpt, /cookie settings/i);
+});
+
+test("gCaptain reader extracts public Discourse posts instead of application chrome", async () => {
+  const requested: string[] = [];
+  const fetcher = (async (input: URL | string) => {
+    const url = new URL(String(input));
+    requested.push(url.toString());
+    return url.pathname.endsWith(".json")
+      ? new Response(gcaptainTopicJson, { headers: { "content-type": "application/json" } })
+      : new Response(gcaptainTopicHtml, { headers: { "content-type": "text/html" } });
+  }) as typeof fetch;
+
+  const evidence = await readThread(
+    { sourceId: "gcaptain", url: "https://forum.gcaptain.com/t/generating-and-maintaining-shipboard-work-lists/63622" },
+    fetcher,
+    noWaitLimiter(),
+    async () => [{ address: "192.0.1.1", family: 4 }],
+    { query: "gemi bakım yazılımı", variants: ["NS5 ship maintenance", "planned maintenance system PMS"] },
+  );
+
+  assert.deepEqual(requested, ["https://forum.gcaptain.com/t/generating-and-maintaining-shipboard-work-lists/63622.json"]);
+  assert.match(evidence.excerpt, /NS Enterprise|NS5/i);
+  assert.match(evidence.excerpt, /Planned Maintenance System|data entry/i);
+  assert.doesNotMatch(evidence.excerpt, /Edit CSS|stylesheet/i);
 });
 
 test("thread reader refuses redirects instead of following an allowlisted URL elsewhere", async () => {

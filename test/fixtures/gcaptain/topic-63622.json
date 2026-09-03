@@ -1,0 +1,23 @@
+{
+  "title": "Generating and maintaining shipboard work lists",
+  "created_at": "2022-07-15T12:24:55.493Z",
+  "post_stream": {
+    "posts": [
+      {
+        "username": "captain",
+        "created_at": "2022-07-15T12:24:55.493Z",
+        "cooked": "<p>The shipboard departments use formal work lists and maintenance tracking software for inspections and handover.</p>"
+      },
+      {
+        "username": "engineer",
+        "created_at": "2022-07-15T17:40:00.000Z",
+        "cooked": "<p>NS Enterprise and NS5 maintenance jobs can create a heavy data entry workload for officers.</p>"
+      },
+      {
+        "username": "mate",
+        "created_at": "2022-07-16T10:47:00.000Z",
+        "cooked": "<p>The Planned Maintenance System helps prevent forgotten jobs and supports the next crew's handover.</p>"
+      }
+    ]
+  }
+}

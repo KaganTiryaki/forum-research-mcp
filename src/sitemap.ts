@@ -10,13 +10,15 @@ function decodeXml(value: string): string {
 
 function titleFromUrl(value: string): string {
   try {
-    return decodeURIComponent(new URL(value).pathname)
+    const segments = decodeURIComponent(new URL(value).pathname)
       .split("/")
-      .filter(Boolean)
-      .at(-1)
-      ?.replace(/\.[a-z0-9]+$/i, "")
+      .filter(Boolean);
+    const last = segments.at(-1) ?? "";
+    const selected = /^\d+$/.test(last) ? segments.at(-2) ?? "" : last;
+    return selected
+      .replace(/\.[a-z0-9]+$/i, "")
       .replace(/[-_]+/g, " ")
-      .trim() ?? "";
+      .trim();
   } catch {
     return "";
   }

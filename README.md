@@ -32,7 +32,7 @@ npm run build
 
 No environment variables are required.
 
-To update an existing checkout to v0.2.1:
+To update an existing checkout to v0.2.2:
 
 ```bash
 git pull --ff-only
@@ -107,7 +107,9 @@ Discovers threads and reads their public pages to return a source-linked evidenc
 
 `depth` may be `quick`, `standard`, or `deep`, with discovery budgets of 6, 18, and 40 requests respectively. `locale` may be `auto`, `tr`, `en`, or `both`. Explicit Turkish or English research never switches language; only `auto` can expand. `query_variants` accepts at most 12 deduplicated variations. Maritime maintenance queries receive a bounded default set when none is supplied.
 
-Every research result includes a `status`: `ok` needs relevant direct evidence from at least three sources, `partial` has one or two, and `coverage_limited` means the requested query/variant coverage is incomplete. `no_relevant_evidence` is returned only when every requested query and variant completed successfully on three distinct query-search sources. For maritime maintenance research, every query also needs a successful maritime query-search source; otherwise the result stays `coverage_limited`. `coverage_complete_for_no_relevant_evidence`, `coverage.requestedQueries`, `coverage.executedQueries`, and `coverage.perQuery` make that decision auditable. Search snippets alone are never evidence.
+Every research result includes a `status`: `ok` needs relevant direct evidence from at least three sources, `partial` has one or two, and `coverage_limited` means the requested query/variant coverage is incomplete. `no_relevant_evidence` is returned only when every requested query and variant completed successfully on three distinct query-search sources. For maritime maintenance research, every query also needs a successful maritime query-search source; otherwise the result stays `coverage_limited`.
+
+`coverage_complete_for_no_relevant_evidence`, `coverage.requestedQueries`, `coverage.executedQueries`, and `coverage.perQuery` make the negative-evidence decision auditable. `executedQueries` means a source actually received the query. Sources that only expose a public category or sitemap are reported separately through `coverage.locallyEvaluatedQueries`, `coverage.sampledIndexes`, and `coverage.sampledIndexSources`; local evaluation of their metadata is not represented as a remote search. `coverage.duplicateResultsRejected` separates repeated index metadata from direct-search relevance rejections. Search snippets and sitemap metadata are never evidence.
 
 ### `thread_read`
 
@@ -126,7 +128,7 @@ Lists every active and passive candidate, its language, read and discovery domai
 
 ## Source catalog
 
-The catalog contains 25 Turkish and 25 English candidates. It is an auditable candidate list, not a promise that 25 sources are active. The enabled sources in v0.2.1 are:
+The catalog contains 25 Turkish and 25 English candidates. It is an auditable candidate list, not a promise that 25 sources are active. The enabled sources in v0.2.2 are:
 
 | Language | Source | Discovery method | Read domain |
 | --- | --- | --- | --- |
@@ -137,11 +139,11 @@ The catalog contains 25 Turkish and 25 English candidates. It is an auditable ca
 | English | Stack Overflow, Super User, Server Fault | Stack Exchange public API | their own domains |
 | English | Hacker News | public Algolia endpoint | `news.ycombinator.com` |
 | English | GitHub Discussions | public GitHub search response | `github.com` |
-| English | gCaptain Professional Mariner Forum | bounded, robots-permitted category JSON index | `forum.gcaptain.com` |
+| English | gCaptain Professional Mariner Forum | bounded public sitemap and category JSON metadata; public Discourse topic JSON reads | `forum.gcaptain.com` |
 
 ShiftDelete and PC Hocası sitemap adapters are present but passive until policy and public-read verification is refreshed. Reddit TR is passive after `403`, and Denizcilik Fakültesi is passive because its relevant areas require login. `forum_sources` reports these states at runtime.
 
-gCaptain's `/search` and `/search.json` paths are robots-denied and are never requested. Its sampled category index can provide additional evidence, but it does not by itself complete query coverage for a negative result.
+gCaptain's `/search` and `/search.json` paths are robots-denied and are never requested. Its sampled sitemap/category metadata can surface older public discussions; the server then reads the selected topic's public Discourse JSON to obtain actual post text. These sampled surfaces can provide evidence, but never by themselves complete query coverage for a negative result.
 
 Disabled candidates remain visible in the catalog for review but are never requested. This includes sources that returned an access block, moved their search endpoint, or could not produce a verified result during release testing. LinkedIn and Ekşi Sözlük are intentionally excluded. Source availability changes over time; an enabled source can still reject automated access. The server reports that gap instead of attempting to bypass it.
 
@@ -154,7 +156,7 @@ This project is a research client, not an access-control bypass. It refuses:
 - login, account, authentication, and CAPTCHA paths
 - redirects outside the selected source
 - private-network addresses
-- oversized or non-HTML thread pages
+- oversized or unsupported thread responses (HTML normally; public Discourse JSON only for the catalogued gCaptain adapter)
 - access blocks, rate limits, and bot challenges
 
 Users are responsible for confirming that their use complies with each source's current terms, robots policy, copyright rules, and applicable law. Keep source excerpts short and link back to the original discussion.

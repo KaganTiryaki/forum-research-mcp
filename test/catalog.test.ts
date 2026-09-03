@@ -31,13 +31,15 @@ test("catalog keeps 25 candidates per locale and excludes blocked platforms", as
     discoveryStrategy: "category_index",
     searchCapability: "sampled_index",
     domainTags: ["maritime", "professional"],
+    contentAdapter: "discourse_json",
     categoryIndexes: [
       "https://forum.gcaptain.com/c/professional-mariner-forum/5.json",
       "https://forum.gcaptain.com/c/engineering/16.json",
       "https://forum.gcaptain.com/c/offshore/11.json",
     ],
     discoveryDomains: undefined,
-    sitemapUrl: undefined,
+    sitemapUrl: "https://forum.gcaptain.com/sitemap.xml",
+    sampleRequestLimit: 8,
     disabledReason: undefined,
   });
   assert.ok(catalog.every((source) => source.robotsStatus && source.termsStatus));

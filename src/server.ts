@@ -31,9 +31,9 @@ export function createForumResearchServer(options: ServerOptions = {}): McpServe
   const research = new ForumResearchService({
     cache,
     discover: ({ query, sources, queryVariants, maxRequests }) => discoverThreads({ query, sources, queryVariants, maxRequests, fetcher }),
-    read: (input) => readThread(input, fetcher),
+    read: (input, focus) => readThread(input, fetcher, undefined, undefined, focus),
   });
-  const server = new McpServer({ name: "forum-research-mcp", version: "0.2.1" });
+  const server = new McpServer({ name: "forum-research-mcp", version: "0.2.2" });
 
   server.registerTool("forum_search", {
     title: "Forum search",
@@ -108,6 +108,7 @@ export function createForumResearchServer(options: ServerOptions = {}): McpServe
         discoveryDomains: source.discoveryDomains ?? source.domains,
         discoveryStrategy: source.discoveryStrategy,
         searchCapability: source.searchCapability,
+        contentAdapter: source.contentAdapter,
         domainTags: source.domainTags,
         categories: source.categories,
         rateLimitMs: source.rateLimitMs,

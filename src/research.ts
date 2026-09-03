@@ -2,6 +2,7 @@ import { catalog, sourcesForLocales, type Source } from "./catalog.js";
 import type { ResearchCache } from "./cache.js";
 import type { DiscoveredThread, DiscoveryBatch } from "./discovery.js";
 import type { ThreadEvidence } from "./reader.js";
+import type { ReadFocus } from "./discourse.js";
 import { assessRelevance } from "./relevance.js";
 import { secondaryLocale, selectInitialLocales, type Locale, type LocalePreference } from "./routing.js";
 
@@ -54,12 +55,24 @@ export interface ResearchIssue {
 export interface Coverage {
   attemptedSources: string[];
   successfulSources: string[];
+  failedSources: string[];
   blockedSources: string[];
   passiveSources: string[];
+  querySearchSources: string[];
+  sampledIndexSources: string[];
   irrelevantResultsRejected: number;
+  duplicateResultsRejected: number;
   queriesUsed: string[];
   requestedQueries: string[];
   executedQueries: string[];
+  locallyEvaluatedQueries: string[];
+  sampledIndexes: Array<{
+    sourceId: string;
+    indexUrl: string;
+    status: "success" | "blocked" | "failed";
+    uniqueCandidates: number;
+    matchedQueries: string[];
+  }>;
   perQuery: QueryCoverage[];
   completeForNoRelevantEvidence: boolean;
 }
@@ -70,11 +83,13 @@ export interface QueryCoverage {
   successfulSources: string[];
   blockedSources: string[];
   strategies: Source["discoveryStrategy"][];
+  querySearchSuccessfulSources: string[];
+  sampledIndexMatchedSources: string[];
 }
 
 export interface ForumResearchDependencies {
   discover(input: { query: string; sources: Source[]; queryVariants?: string[]; maxRequests?: number }): Promise<DiscoveryBatch | DiscoveredThread[]>;
-  read?(input: { sourceId: string; url: string }): Promise<ThreadEvidence>;
+  read?(input: { sourceId: string; url: string }, focus?: ReadFocus): Promise<ThreadEvidence>;
   cache?: Pick<ResearchCache, "get" | "set">;
 }
 
@@ -98,10 +113,11 @@ function deduplicate(threads: DiscoveredThread[]): DiscoveredThread[] {
 }
 
 function prioritizeDistinctSources(threads: DiscoveredThread[]): DiscoveredThread[] {
+  const ranked = [...threads].sort((left, right) => (right.score ?? 0) - (left.score ?? 0));
   const seenSources = new Set<string>();
   const firstFromEachSource: DiscoveredThread[] = [];
   const remaining: DiscoveredThread[] = [];
-  for (const thread of threads) {
+  for (const thread of ranked) {
     if (seenSources.has(thread.sourceId)) remaining.push(thread);
     else {
       seenSources.add(thread.sourceId);
@@ -147,7 +163,7 @@ export class ForumResearchService {
   }
 
   private async discover(query: string, sources: Source[], queryVariants: string[], maxRequests: number): Promise<DiscoveryBatch> {
-    const cacheKey = `v3:discovery:${query}:${queryVariants.join("|")}:${maxRequests}:${sources.map((source) => source.id).sort().join(",")}`;
+    const cacheKey = `v4:discovery:${query}:${queryVariants.join("|")}:${maxRequests}:${sources.map((source) => source.id).sort().join(",")}`;
     const cached = this.dependencies.cache?.get<DiscoveryBatch | DiscoveredThread[]>(cacheKey);
     if (cached) return this.normalizeDiscovery(cached);
 
@@ -247,66 +263,112 @@ export class ForumResearchService {
   private emptyCoverage(query: string, queryVariants: string[]): Coverage {
     const requestedQueries = [query, ...queryVariants];
     return {
-      attemptedSources: [], successfulSources: [], blockedSources: [], passiveSources: [], irrelevantResultsRejected: 0,
+      attemptedSources: [], successfulSources: [], failedSources: [], blockedSources: [], passiveSources: [],
+      querySearchSources: [], sampledIndexSources: [], irrelevantResultsRejected: 0, duplicateResultsRejected: 0,
       queriesUsed: [], requestedQueries, executedQueries: [],
-      perQuery: requestedQueries.map((requestedQuery) => ({ query: requestedQuery, attemptedSources: [], successfulSources: [], blockedSources: [], strategies: [] })),
+      locallyEvaluatedQueries: [], sampledIndexes: [],
+      perQuery: requestedQueries.map((requestedQuery) => ({
+        query: requestedQuery, attemptedSources: [], successfulSources: [], blockedSources: [], strategies: [],
+        querySearchSuccessfulSources: [], sampledIndexMatchedSources: [],
+      })),
       completeForNoRelevantEvidence: false,
     };
   }
 
   private coverageFor(query: string, queryVariants: string[], locales: Locale[], sourceFilter: string[] | undefined, threads: DiscoveredThread[], batches: DiscoveryBatch[]): Coverage {
-    const attemptedSources = sourcesForLocales(locales, sourceFilter).map((source) => source.id);
     const outcomes = batches.flatMap((batch) => batch.sourceOutcomes ?? []);
     const requestedQueries = [query, ...queryVariants];
+    const isQueryOutcome = (outcome: NonNullable<DiscoveryBatch["sourceOutcomes"]>[number]) => outcome.kind === "query_search" || typeof outcome.query === "string";
+    const isSampledOutcome = (outcome: NonNullable<DiscoveryBatch["sourceOutcomes"]>[number]) => outcome.kind === "sampled_index";
+    const queryOutcomes = outcomes.filter(isQueryOutcome);
+    const sampledOutcomes = outcomes.filter(isSampledOutcome);
     const perQuery = requestedQueries.map((requestedQuery) => {
-      const matching = outcomes.filter((outcome) => outcome.query === requestedQuery);
+      const matching = queryOutcomes.filter((outcome) => outcome.query === requestedQuery);
+      const sampledMatching = sampledOutcomes.filter((outcome) => outcome.queriesEvaluated?.includes(requestedQuery));
+      const querySearchSuccessfulSources = [...new Set(matching
+        .filter((outcome) => outcome.status === "success")
+        .map((outcome) => outcome.sourceId))];
+      const sampledIndexMatchedSources = [...new Set(sampledMatching
+        .filter((outcome) => outcome.status === "success")
+        .map((outcome) => outcome.sourceId))];
       return {
         query: requestedQuery,
-        attemptedSources: [...new Set(matching.map((outcome) => outcome.sourceId))],
-        successfulSources: [...new Set(matching.filter((outcome) => outcome.status === "success").map((outcome) => outcome.sourceId))],
+        attemptedSources: [...new Set([...matching, ...sampledMatching].map((outcome) => outcome.sourceId))],
+        successfulSources: [...new Set([...querySearchSuccessfulSources, ...sampledIndexMatchedSources])],
         blockedSources: [...new Set(matching.filter((outcome) => outcome.status === "blocked").map((outcome) => outcome.sourceId))],
-        strategies: [...new Set(matching.map((outcome) => outcome.strategy))],
+        strategies: [...new Set([...matching, ...sampledMatching].map((outcome) => outcome.strategy))],
+        querySearchSuccessfulSources,
+        sampledIndexMatchedSources,
       };
     });
     const maritimePms = /\b(?:gemi|ship|maritime|vessel)\b/i.test(requestedQueries.join(" "))
       && /\b(?:bakım|bakim|maintenance|planned|pms)\b/i.test(requestedQueries.join(" "));
-    const hasThreeQuerySearchSources = perQuery.every((item) => item.successfulSources
-      .filter((sourceId) => catalog.find((source) => source.id === sourceId)?.searchCapability === "query_search")
-      .length >= MINIMUM_DISTINCT_SOURCES);
-    const hasMaritimeQuerySearchSource = !maritimePms || perQuery.every((item) => item.successfulSources
+    const hasThreeQuerySearchSources = perQuery.every((item) => item.querySearchSuccessfulSources.length >= MINIMUM_DISTINCT_SOURCES);
+    const hasMaritimeQuerySearchSource = !maritimePms || perQuery.every((item) => item.querySearchSuccessfulSources
       .some((sourceId) => {
         const source = catalog.find((candidate) => candidate.id === sourceId);
         return source?.searchCapability === "query_search" && source.domainTags.includes("maritime");
       }));
     const completeForNoRelevantEvidence = hasThreeQuerySearchSources && hasMaritimeQuerySearchSource;
     return {
-      attemptedSources,
+      attemptedSources: [...new Set(outcomes.map((outcome) => outcome.sourceId))],
       successfulSources: outcomes.length
         ? [...new Set(outcomes.filter((outcome) => outcome.status === "success").map((outcome) => outcome.sourceId))]
         : [...new Set(threads.map((thread) => thread.sourceId))],
+      failedSources: [...new Set(outcomes.filter((outcome) => outcome.status === "failed").map((outcome) => outcome.sourceId))],
       blockedSources: [...new Set(outcomes.filter((outcome) => outcome.status === "blocked").map((outcome) => outcome.sourceId))],
       passiveSources: catalog
         .filter((source) => locales.includes(source.locale) && !source.enabled && (!sourceFilter?.length || sourceFilter.includes(source.id)))
         .map((source) => source.id),
+      querySearchSources: [...new Set(queryOutcomes.map((outcome) => outcome.sourceId))],
+      sampledIndexSources: [...new Set(sampledOutcomes.map((outcome) => outcome.sourceId))],
       irrelevantResultsRejected: batches.reduce((total, batch) => total + (batch.irrelevantResultsRejected ?? 0), 0),
-      queriesUsed: requestedQueries.filter((requestedQuery) => outcomes.some((outcome) => outcome.query === requestedQuery)),
+      duplicateResultsRejected: batches.reduce((total, batch) => total + (batch.duplicateResultsRejected ?? 0), 0),
+      queriesUsed: requestedQueries.filter((requestedQuery) => queryOutcomes.some((outcome) => outcome.query === requestedQuery)),
       requestedQueries,
-      executedQueries: requestedQueries.filter((requestedQuery) => outcomes.some((outcome) => outcome.query === requestedQuery)),
+      executedQueries: requestedQueries.filter((requestedQuery) => queryOutcomes.some((outcome) => outcome.query === requestedQuery)),
+      locallyEvaluatedQueries: requestedQueries.filter((requestedQuery) => sampledOutcomes.some((outcome) => outcome.status === "success" && outcome.queriesEvaluated?.includes(requestedQuery))),
+      sampledIndexes: sampledOutcomes.map((outcome) => ({
+        sourceId: outcome.sourceId,
+        indexUrl: outcome.indexUrl ?? "",
+        status: outcome.status,
+        uniqueCandidates: outcome.uniqueCandidateCount ?? outcome.discoveredCount,
+        matchedQueries: outcome.queriesEvaluated ?? [],
+      })),
       perQuery,
       completeForNoRelevantEvidence,
     };
   }
 
   private issuesFor(batches: DiscoveryBatch[]): ResearchIssue[] {
-    return batches.flatMap((batch) => (batch.sourceOutcomes ?? []).flatMap((outcome) => outcome.status === "blocked"
-      ? [{ stage: "discovery" as const, code: outcome.issueCode ?? "http_403", message: "Source blocked direct discovery.", sourceId: outcome.sourceId }]
-      : []));
+    return batches.flatMap((batch) => (batch.sourceOutcomes ?? []).flatMap((outcome): ResearchIssue[] => {
+      const context = outcome.kind === "sampled_index"
+        ? outcome.indexUrl ?? "sampled index"
+        : outcome.query ?? "query";
+      if (outcome.status === "blocked") {
+        return [{
+          stage: "discovery" as const,
+          code: outcome.issueCode ?? "http_403",
+          message: `Source blocked discovery for ${context}.`,
+          sourceId: outcome.sourceId,
+        }];
+      }
+      if (outcome.status === "failed") {
+        return [{
+          stage: "discovery" as const,
+          code: "discovery_failed" as const,
+          message: `Source discovery failed for ${context}.`,
+          sourceId: outcome.sourceId,
+        }];
+      }
+      return [];
+    }));
   }
 
   private coverageGapWarning(coverage: Coverage): string {
     const incompleteQueries = coverage.perQuery
-      .filter((item) => item.successfulSources.length < MINIMUM_DISTINCT_SOURCES)
-      .map((item) => `${item.query} (${item.successfulSources.length}/3 sources)`);
+      .filter((item) => item.querySearchSuccessfulSources.length < MINIMUM_DISTINCT_SOURCES)
+      .map((item) => `${item.query} (${item.querySearchSuccessfulSources.length}/3 query-search sources)`);
     const maritimeGap = coverage.requestedQueries.some((requestedQuery) => /\b(?:gemi|ship|maritime|vessel)\b/i.test(requestedQuery))
       && coverage.perQuery.some((item) => !item.successfulSources.some((sourceId) => {
         const source = catalog.find((candidate) => candidate.id === sourceId);
@@ -314,6 +376,9 @@ export class ForumResearchService {
       }));
     const details = [
       incompleteQueries.length ? `Incomplete query coverage: ${incompleteQueries.join(", ")}.` : "",
+      coverage.locallyEvaluatedQueries.length
+        ? `${coverage.locallyEvaluatedQueries.length} requested quer${coverage.locallyEvaluatedQueries.length === 1 ? "y was" : "ies were"} locally evaluated against sampled indexes; they were not remotely searched there.`
+        : "",
       maritimeGap ? "No successful maritime query-search source covered every requested query." : "",
     ].filter(Boolean).join(" ");
     return `${details} Absence of evidence is not evidence of absence.`.trim();
@@ -325,6 +390,7 @@ export class ForumResearchService {
     const warnings = [...search.warnings];
     const issues = [...search.issues];
     const coverage: Coverage = { ...search.coverage, irrelevantResultsRejected: search.coverage.irrelevantResultsRejected };
+    const evidenceVariants = search.query_variants;
     const attemptedUrls = new Set<string>();
     let threads = [...search.threads];
     let locales = [...search.locales];
@@ -339,10 +405,13 @@ export class ForumResearchService {
           .slice(0, DEPTH_LIMIT[depth])) {
           attemptedUrls.add(thread.url);
           try {
-            const direct = await this.dependencies.read!({ sourceId: thread.sourceId, url: thread.url });
+            const direct = await this.dependencies.read!({ sourceId: thread.sourceId, url: thread.url }, {
+              query: input.query,
+              variants: evidenceVariants,
+            });
             const relevance = assessRelevance({
               query: input.query,
-              variants: normalizeVariants(input.queryVariants),
+              variants: evidenceVariants,
               title: direct.title,
               text: direct.excerpt,
             });
