@@ -2,6 +2,7 @@ import { lookup } from "node:dns/promises";
 import { getSource } from "./catalog.js";
 import { readTextWithLimit } from "./http-body.js";
 import { defaultRateLimiter, type SourceRateLimiter } from "./rate-limit.js";
+import { discourseExcerpt, discourseTopicJsonUrl, parseDiscourseTopic, type ReadFocus } from "./discourse.js";
 
 export interface ThreadReadInput {
   sourceId: string;
@@ -165,11 +166,15 @@ export async function readThread(
   fetcher: typeof fetch = fetch,
   rateLimiter: SourceRateLimiter = defaultRateLimiter,
   resolver: HostResolver | undefined = fetcher === fetch ? resolveHost : undefined,
+  focus?: ReadFocus,
 ): Promise<ThreadEvidence> {
   const source = getSource(input.sourceId);
   if (!source?.enabled) throw new Error("Source is not enabled for read-only research");
 
-  let target = validateTarget(new URL(input.url), source.domains);
+  const evidenceTarget = validateTarget(new URL(input.url), source.domains);
+  let target = source.contentAdapter === "discourse_json"
+    ? validateTarget(discourseTopicJsonUrl(evidenceTarget), source.domains)
+    : evidenceTarget;
   let response: Response;
   for (let redirects = 0; ; redirects += 1) {
     if (resolver) await assertPublicResolution(target.hostname, resolver);
@@ -199,7 +204,10 @@ export async function readThread(
   if (!response.ok) throw new Error(`Source returned HTTP ${response.status}`);
 
   const contentType = response.headers.get("content-type") ?? "";
-  if (!/text\/html|application\/xhtml\+xml/i.test(contentType)) {
+  if (source.contentAdapter === "discourse_json" && !/application\/json/i.test(contentType)) {
+    throw new Error("Discourse thread response is not JSON");
+  }
+  if (source.contentAdapter === "html" && !/text\/html|application\/xhtml\+xml/i.test(contentType)) {
     throw new Error("Thread response is not an HTML document");
   }
 
@@ -209,6 +217,17 @@ export async function readThread(
   }
 
   const html = await readTextWithLimit(response, MAX_HTML_BYTES);
+  if (source.contentAdapter === "discourse_json") {
+    const topic = parseDiscourseTopic(html);
+    return {
+      sourceId: source.id,
+      sourceName: source.displayName,
+      url: evidenceTarget.toString(),
+      title: topic.title,
+      excerpt: discourseExcerpt(topic, focus),
+      publishedAt: topic.publishedAt,
+    };
+  }
   const text = textFromHtml(html);
   const title = titleFromHtml(html);
   const isChallenge = response.headers.get("cf-mitigated") === "challenge"

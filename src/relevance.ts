@@ -7,7 +7,7 @@ export interface RelevanceInput {
 
 export interface RelevanceAssessment {
   accepted: boolean;
-  reason: "relevant" | "insufficient_term_overlap" | "system_page" | "ambiguous_short_term";
+  reason: "relevant" | "domain_candidate" | "insufficient_term_overlap" | "system_page" | "non_experience_page" | "ambiguous_short_term";
   matchedTerms: string[];
   score: number;
 }
@@ -21,8 +21,14 @@ const STOP_WORDS = new Set([
 ]);
 
 const SYSTEM_PAGE_PATTERN = /\b(?:kurallar?|gizlilik(?:\s+bildirimi)?|sik\s+sorulan\s+sorular|sss|faq|kullanim\s+kosullari|uyelik|giris(?:\s+yap)?|kayit(?:\s+ol)?|privacy|terms?(?:\s+of\s+service)?|sign\s*in|log\s*in)\b/i;
+const NON_EXPERIENCE_PAGE_PATTERN = /\b(?:job\s+posting|job\s+opening|career\s+opportunit|recruit(?:er)?s?|recruitment|recruiting|we\s+are\s+hiring|apply\s+now|position\s+available|is\s+seeking|vacanc(?:y|ies)|ilan(?:i|lar)?|is\s+ilan(?:i|lari)|basvuru)\b/i;
 const AMBIGUOUS_SHORT_TERMS = new Set(["amos", "pms"]);
 const CONTEXT_TERMS = new Set(["gemi", "bakim", "yazilim", "ship", "maritime", "maintenance", "vessel"]);
+const MARITIME_CANDIDATE_TERMS = ["gemi", "ship", "shipboard", "vessel", "marine", "maritime", "engine", "deck"];
+const MAINTENANCE_WORKFLOW_TERMS = [
+  "bakim", "maintenance", "planned maintenance", "work list", "work lists", "work order", "cmms", "pms",
+  "inventory", "spare parts", "inspection", "audit",
+];
 
 export function normalizeForRelevance(value: string): string {
   return value
@@ -62,6 +68,9 @@ export function assessRelevance({ query, variants = [], title, text }: Relevance
   if (SYSTEM_PAGE_PATTERN.test(candidate) && !containsRequestedSystemInfo(query)) {
     return { accepted: false, reason: "system_page", matchedTerms: [], score: 0 };
   }
+  if (NON_EXPERIENCE_PAGE_PATTERN.test(candidate) && !/\b(?:job|career|recruit|ilan|basvuru)\b/i.test(normalizeForRelevance(query))) {
+    return { accepted: false, reason: "non_experience_page", matchedTerms: [], score: 0 };
+  }
 
   const queryTerms = terms(query);
   const allQueries = [query, ...variants.filter(Boolean).slice(0, 12)];
@@ -85,4 +94,18 @@ export function assessRelevance({ query, variants = [], title, text }: Relevance
     matchedTerms,
     score: matchedTerms.length + (hasPhrase ? 2 : 0),
   };
+}
+
+export function assessDiscoveryCandidate(input: RelevanceInput & { domainTags: string[] }): RelevanceAssessment {
+  const strict = assessRelevance(input);
+  if (strict.accepted || !input.domainTags.includes("maritime")) return strict;
+
+  const candidate = normalizeForRelevance(`${input.title} ${input.text}`);
+  const maritimeMatches = MARITIME_CANDIDATE_TERMS.filter((term) => candidate.includes(term));
+  const workflowMatches = MAINTENANCE_WORKFLOW_TERMS.filter((term) => candidate.includes(term));
+  const hasMaritimeTerm = maritimeMatches.length > 0;
+  const hasWorkflowTerm = workflowMatches.length > 0;
+  return hasMaritimeTerm && hasWorkflowTerm
+    ? { accepted: true, reason: "domain_candidate", matchedTerms: [], score: maritimeMatches.length + workflowMatches.length }
+    : strict;
 }

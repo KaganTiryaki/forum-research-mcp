@@ -45,6 +45,93 @@ test("research evidence comes from direct thread reads rather than discovery sni
   assert.match(result?.summary ?? "", /1 directly read thread/i);
 });
 
+test("research passes the primary query and variants to focused direct reads", async () => {
+  const { ForumResearchService } = await import("../src/research.js");
+  let capturedFocus: { query: string; variants: string[] } | undefined;
+  const service = new ForumResearchService({
+    discover: async () => [{
+      sourceId: "gcaptain",
+      sourceName: "gCaptain",
+      url: "https://forum.gcaptain.com/t/generating-and-maintaining-shipboard-work-lists/63622",
+      title: "Generating and maintaining shipboard work lists",
+      snippet: "",
+    }],
+    read: async ({ sourceId, url }, focus) => {
+      capturedFocus = focus;
+      return {
+        sourceId,
+        sourceName: "gCaptain",
+        url,
+        title: "Generating and maintaining shipboard work lists",
+        excerpt: "NS5 ship maintenance and Planned Maintenance System experience.",
+      };
+    },
+  });
+
+  const result = await service.research({
+    query: "gemi bakım yazılımı",
+    queryVariants: ["NS5 ship maintenance", "planned maintenance system PMS"],
+    locale: "en",
+  });
+
+  assert.deepEqual(capturedFocus, {
+    query: "gemi bakım yazılımı",
+    variants: ["NS5 ship maintenance", "planned maintenance system PMS"],
+  });
+  assert.equal(result.status, "partial");
+});
+
+test("default maritime variants remain available to the direct evidence gate", async () => {
+  const { ForumResearchService } = await import("../src/research.js");
+  const service = new ForumResearchService({
+    discover: async () => [{
+      sourceId: "gcaptain",
+      sourceName: "gCaptain",
+      url: "https://forum.gcaptain.com/t/generating-and-maintaining-shipboard-work-lists/63622",
+      title: "Generating and maintaining shipboard work lists",
+      snippet: "",
+    }],
+    read: async ({ sourceId, url }) => ({
+      sourceId,
+      sourceName: "gCaptain",
+      url,
+      title: "Generating and maintaining shipboard work lists",
+      excerpt: "NS5 maintenance and the Planned Maintenance System reduce forgotten jobs during crew handover.",
+    }),
+  });
+
+  const result = await service.research({ query: "gemi bakım yazılımı kullanıcı deneyimleri", locale: "en" });
+
+  assert.equal(result.status, "partial");
+  assert.equal(result.evidence.length, 1);
+});
+
+test("research reads a higher-scored sampled candidate before lower-scored candidates from the same source", async () => {
+  const { ForumResearchService } = await import("../src/research.js");
+  const attempted: string[] = [];
+  const service = new ForumResearchService({
+    discover: async () => [
+      { sourceId: "gcaptain", sourceName: "gCaptain", url: "https://forum.gcaptain.com/t/low-one/1", title: "Inspection notice", snippet: "", score: 1 },
+      { sourceId: "gcaptain", sourceName: "gCaptain", url: "https://forum.gcaptain.com/t/low-two/2", title: "Vessel notice", snippet: "", score: 1 },
+      { sourceId: "gcaptain", sourceName: "gCaptain", url: "https://forum.gcaptain.com/t/work-lists/63622", title: "Generating and maintaining shipboard work lists", snippet: "", score: 9 },
+    ],
+    read: async ({ sourceId, url }) => {
+      attempted.push(url);
+      return {
+        sourceId,
+        sourceName: "gCaptain",
+        url,
+        title: "Generating and maintaining shipboard work lists",
+        excerpt: "NS5 maintenance and Planned Maintenance System experience.",
+      };
+    },
+  });
+
+  await service.research({ query: "gemi bakım yazılımı", queryVariants: ["NS5 ship maintenance"], locale: "en", depth: "quick" });
+
+  assert.equal(attempted[0], "https://forum.gcaptain.com/t/work-lists/63622");
+});
+
 test("unhappiest path: six irrelevant system pages are not reported as evidence", async () => {
   const { ForumResearchService } = await import("../src/research.js");
   const systemPages = ["Forum Kuralları", "Gizlilik Bildirimi", "Sık Sorulan Sorular", "Kullanım Koşulları", "Üyelik", "Giriş Yap"];
@@ -155,6 +242,70 @@ test("research reports coverage_limited when a requested variant lacks three suc
   assert.deepEqual(result.coverage.executedQueries, ["gemi bakım yazılımı", "AMOS gemi bakım"]);
   assert.equal(result.coverage.perQuery.find((item) => item.query === "AMOS gemi bakım")?.successfulSources.length, 2);
   assert.match(result.findings.coverageWarning ?? "", /maritime query-search source/i);
+});
+
+test("sampled indexes are locally evaluated without being reported as remote query searches", async () => {
+  const { ForumResearchService } = await import("../src/research.js");
+  const queries = ["gemi bakım yazılımı", "NS5 ship maintenance"];
+  const service = new ForumResearchService({
+    discover: async () => ({
+      threads: [],
+      warnings: [],
+      irrelevantResultsRejected: 2,
+      duplicateResultsRejected: 7,
+      sourceOutcomes: [{
+        kind: "sampled_index" as const,
+        sourceId: "gcaptain",
+        indexUrl: "https://forum.gcaptain.com/sitemap_3.xml",
+        queriesEvaluated: queries,
+        status: "success" as const,
+        // A sitemap may expose twenty raw entries while only two unique topic
+        // candidates survive canonical URL de-duplication.
+        discoveredCount: 20,
+        uniqueCandidateCount: 2,
+        strategy: "category_index" as const,
+        attemptOrdinal: 3,
+      }],
+    }),
+  });
+
+  const result = await service.research({ query: queries[0]!, queryVariants: [queries[1]!], locale: "en", depth: "deep" });
+
+  assert.deepEqual(result.coverage.executedQueries, []);
+  assert.deepEqual(result.coverage.locallyEvaluatedQueries, queries);
+  assert.deepEqual(result.coverage.sampledIndexSources, ["gcaptain"]);
+  assert.equal(result.coverage.sampledIndexes[0]?.uniqueCandidates, 2);
+  assert.equal(result.coverage.duplicateResultsRejected, 7);
+  assert.equal(result.coverage.perQuery[0]?.querySearchSuccessfulSources.length, 0);
+  assert.deepEqual(result.coverage.perQuery[0]?.sampledIndexMatchedSources, ["gcaptain"]);
+  assert.equal(result.coverage_complete_for_no_relevant_evidence, false);
+  assert.equal(result.status, "coverage_limited");
+  assert.match(result.findings.coverageWarning ?? "", /locally evaluated|not remotely searched/i);
+});
+
+test("failed discovery outcomes are returned as structured discovery failures", async () => {
+  const { ForumResearchService } = await import("../src/research.js");
+  const service = new ForumResearchService({
+    discover: async () => ({
+      threads: [],
+      warnings: [],
+      sourceOutcomes: [{
+        kind: "sampled_index" as const,
+        sourceId: "gcaptain",
+        indexUrl: "https://forum.gcaptain.com/sitemap.xml",
+        queriesEvaluated: ["gemi bakım yazılımı"],
+        status: "failed" as const,
+        discoveredCount: 0,
+        strategy: "category_index" as const,
+        attemptOrdinal: 1,
+      }],
+    }),
+  });
+
+  const result = await service.search({ query: "gemi bakım yazılımı", locale: "en" });
+
+  assert.deepEqual(result.coverage.failedSources, ["gcaptain"]);
+  assert.ok(result.issues.some((issue) => issue.code === "discovery_failed" && issue.sourceId === "gcaptain"));
 });
 
 test("research returns no_relevant_evidence only after every non-maritime query has three successful sources", async () => {

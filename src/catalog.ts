@@ -6,6 +6,7 @@ export type RobotsStatus = "reference_allowed" | "needs_review";
 export type TermsStatus = "read_only_assessed" | "manual_review_required";
 export type DiscoveryStrategy = "direct_search" | "category_index" | "sitemap";
 export type SearchCapability = "query_search" | "sampled_index";
+export type ContentAdapter = "html" | "discourse_json";
 
 export interface Source {
   id: string;
@@ -22,9 +23,11 @@ export interface Source {
   discoveryStrategy: DiscoveryStrategy;
   searchCapability: SearchCapability;
   domainTags: string[];
+  contentAdapter: ContentAdapter;
   discoveryDomains?: string[];
   categoryIndexes?: string[];
   sitemapUrl?: string;
+  sampleRequestLimit?: number;
   disabledReason?: string;
 }
 
@@ -33,9 +36,11 @@ interface SourceOptions {
   discoveryDomains?: string[];
   categoryIndexes?: string[];
   sitemapUrl?: string;
+  sampleRequestLimit?: number;
   disabledReason?: string;
   searchCapability?: SearchCapability;
   domainTags?: string[];
+  contentAdapter?: ContentAdapter;
 }
 
 const tr = (id: string, displayName: string, domain: string, categories: string[], enabled = false, options: SourceOptions = {}): Source => ({
@@ -53,9 +58,11 @@ const tr = (id: string, displayName: string, domain: string, categories: string[
   discoveryStrategy: options.discoveryStrategy ?? "direct_search",
   searchCapability: options.searchCapability ?? "query_search",
   domainTags: options.domainTags ?? [],
+  contentAdapter: options.contentAdapter ?? "html",
   discoveryDomains: options.discoveryDomains,
   categoryIndexes: options.categoryIndexes,
   sitemapUrl: options.sitemapUrl,
+  sampleRequestLimit: options.sampleRequestLimit,
   disabledReason: enabled ? undefined : options.disabledReason ?? "policy_or_access_review",
 });
 
@@ -82,9 +89,11 @@ const en = (
   discoveryStrategy: options.discoveryStrategy ?? "direct_search",
   searchCapability: options.searchCapability ?? "query_search",
   domainTags: options.domainTags ?? [],
+  contentAdapter: options.contentAdapter ?? "html",
   discoveryDomains: options.discoveryDomains,
   categoryIndexes: options.categoryIndexes,
   sitemapUrl: options.sitemapUrl,
+  sampleRequestLimit: options.sampleRequestLimit,
   disabledReason: enabled ? undefined : options.disabledReason ?? "policy_or_access_review",
 });
 
@@ -127,15 +136,18 @@ export const catalog: Source[] = [
   }),
 
   en("reddit", "Reddit", "www.reddit.com", ["general", "technology", "communities"]),
-  en("stack-overflow", "Stack Overflow", "stackoverflow.com", ["programming", "software"], true),
-  en("super-user", "Super User", "superuser.com", ["software", "hardware"], true),
-  en("server-fault", "Server Fault", "serverfault.com", ["infrastructure", "security"], true),
-  en("hacker-news", "Hacker News", "news.ycombinator.com", ["technology", "startups"], true),
+  en("stack-overflow", "Stack Overflow", "stackoverflow.com", ["programming", "software"], true, "public_html", { discoveryDomains: ["api.stackexchange.com"] }),
+  en("super-user", "Super User", "superuser.com", ["software", "hardware"], true, "public_html", { discoveryDomains: ["api.stackexchange.com"] }),
+  en("server-fault", "Server Fault", "serverfault.com", ["infrastructure", "security"], true, "public_html", { discoveryDomains: ["api.stackexchange.com"] }),
+  en("hacker-news", "Hacker News", "news.ycombinator.com", ["technology", "startups"], true, "public_html", { discoveryDomains: ["hn.algolia.com"] }),
   en("github-discussions", "GitHub Discussions", "github.com", ["software", "open-source"], true),
   en("gcaptain", "gCaptain Professional Mariner Forum", "forum.gcaptain.com", ["maritime", "professional", "engineering"], true, "public_html", {
     discoveryStrategy: "category_index",
     searchCapability: "sampled_index",
     domainTags: ["maritime", "professional"],
+    contentAdapter: "discourse_json",
+    sitemapUrl: "https://forum.gcaptain.com/sitemap.xml",
+    sampleRequestLimit: 8,
     categoryIndexes: [
       "https://forum.gcaptain.com/c/professional-mariner-forum/5.json",
       "https://forum.gcaptain.com/c/engineering/16.json",

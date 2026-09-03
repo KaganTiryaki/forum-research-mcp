@@ -1,7 +1,7 @@
 import type { Source } from "./catalog.js";
 import { readTextWithLimit } from "./http-body.js";
 import { defaultRateLimiter, type SourceRateLimiter } from "./rate-limit.js";
-import { assessRelevance } from "./relevance.js";
+import { assessDiscoveryCandidate, assessRelevance } from "./relevance.js";
 import { parseSitemapEntries, parseSitemapIndex } from "./sitemap.js";
 
 export interface DiscoveredThread {
@@ -19,13 +19,18 @@ export interface DiscoveryBatch {
   warnings: string[];
   sourceOutcomes?: DiscoverySourceOutcome[];
   irrelevantResultsRejected?: number;
+  duplicateResultsRejected?: number;
 }
 
 export interface DiscoverySourceOutcome {
+  kind?: "query_search" | "sampled_index";
   sourceId: string;
-  query: string;
+  query?: string;
+  indexUrl?: string;
+  queriesEvaluated?: string[];
   status: "success" | "blocked" | "failed";
   discoveredCount: number;
+  uniqueCandidateCount?: number;
   strategy: Source["discoveryStrategy"];
   attemptOrdinal: number;
   issueCode?: "http_403" | "rate_limited" | "robots_denied" | "login_required";
@@ -37,6 +42,10 @@ export interface ScheduledDiscoveryAttempt {
   attemptOrdinal: number;
 }
 
+export type DiscoveryTask =
+  | { kind: "query_search"; source: Source; query: string; attemptOrdinal: number }
+  | { kind: "sampled_index"; source: Source; queries: string[]; requestBudget: number };
+
 export interface DiscoverInput {
   query: string;
   sources: Source[];
@@ -47,8 +56,13 @@ export interface DiscoverInput {
 }
 
 const MAX_DISCOVERY_BYTES = 2_000_000;
+const MAX_SITEMAP_TOTAL_BYTES = 6_000_000;
+const MAX_SITEMAP_CHILDREN = 4;
+const MAX_SAMPLED_CANDIDATES = 50;
 const THREAD_PATH = /\/(?:comments|questions|discussions|threads?|topics?|konu|t)\//i;
 const SERGIP_THREAD_PATH = /\/forum\/\d+-[^/]+\.html$/i;
+const DISCOURSE_TOPIC_PATH = /^\/t\/[^/]+\/\d+\/?$/i;
+const GCAPTAIN_SITEMAP_CHILD_PATH = /^\/sitemap_(?:\d+|recent)\.xml$/i;
 
 const htmlSearchUrl: Record<string, (query: string) => string> = {
   donanimarsivi: (query) => `https://forum.donanimarsivi.com/ara/?q=${encodeURIComponent(query)}`,
@@ -322,6 +336,232 @@ async function discoverGcaptainIndex(source: Source, attemptOrdinal: number, fet
   });
 }
 
+interface SampledDiscoveryResult {
+  threads: DiscoveredThread[];
+  warnings: string[];
+  outcomes: DiscoverySourceOutcome[];
+  irrelevantResultsRejected: number;
+  duplicateResultsRejected: number;
+}
+
+function classifyDiscoveryError(error: unknown): {
+  message: string;
+  status: "blocked" | "failed";
+  issueCode?: DiscoverySourceOutcome["issueCode"];
+} {
+  const message = error instanceof Error ? error.message : "unknown source error";
+  const blocked = /HTTP (?:401|403|429)|captcha|bot challenge/i.test(message);
+  const issueCode = /HTTP 429/i.test(message)
+    ? "rate_limited" as const
+    : /HTTP 401|login/i.test(message)
+      ? "login_required" as const
+      : /robots/i.test(message)
+        ? "robots_denied" as const
+        : "http_403" as const;
+  return { message, status: blocked ? "blocked" : "failed", issueCode: blocked ? issueCode : undefined };
+}
+
+async function discoverGcaptainSample(
+  source: Source,
+  queries: string[],
+  requestBudget: number,
+  fetcher: typeof fetch,
+  rateLimiter: SourceRateLimiter,
+): Promise<SampledDiscoveryResult> {
+  const sitemapUrl = source.sitemapUrl;
+  if (!sitemapUrl) throw new Error("no gCaptain sitemap is configured");
+
+  const pending: string[] = [sitemapUrl];
+  const visited = new Set<string>();
+  const seenThreads = new Set<string>();
+  const threads: DiscoveredThread[] = [];
+  const warnings: string[] = [];
+  const outcomes: DiscoverySourceOutcome[] = [];
+  let sitemapBytes = 0;
+  let irrelevantResultsRejected = 0;
+  let duplicateResultsRejected = 0;
+  let categoriesQueued = false;
+
+  const queueCategories = () => {
+    if (categoriesQueued) return;
+    categoriesQueued = true;
+    pending.push(...(source.categoryIndexes ?? []));
+  };
+
+  while (pending.length && outcomes.length < requestBudget) {
+    const indexUrl = pending.shift()!;
+    if (visited.has(indexUrl)) continue;
+    visited.add(indexUrl);
+    const attemptOrdinal = outcomes.length + 1;
+    try {
+      const response = await request(source, indexUrl, fetcher, rateLimiter);
+      const contentType = response.headers.get("content-type") ?? "";
+      const body = await responseText(response);
+      let rawThreads: DiscoveredThread[] = [];
+
+      if (/application\/(?:xml|[^;]+\+xml)|text\/xml/i.test(contentType)) {
+        sitemapBytes += new TextEncoder().encode(body).byteLength;
+        if (sitemapBytes > MAX_SITEMAP_TOTAL_BYTES) throw new Error("aggregate sitemap responses exceeded the discovery size limit");
+        const current = new URL(indexUrl);
+        const children = parseSitemapIndex(body).flatMap((childUrl) => {
+          try {
+            const child = new URL(childUrl);
+            return isAllowedResultUrl(child, source)
+              && child.hostname === current.hostname
+              && GCAPTAIN_SITEMAP_CHILD_PATH.test(child.pathname)
+              ? [child.toString()]
+              : [];
+          } catch {
+            return [];
+          }
+        }).slice(0, MAX_SITEMAP_CHILDREN);
+        if (children.length) {
+          pending.unshift(...children.filter((child) => !visited.has(child)));
+          queueCategories();
+        }
+        rawThreads = parseSitemapEntries(body).flatMap((entry) => {
+          const url = new URL(entry.url);
+          if (!DISCOURSE_TOPIC_PATH.test(url.pathname)) return [];
+          const result = normalizeResult(source, {
+            url: entry.url,
+            title: entry.titleHint,
+            snippet: "",
+            publishedAt: entry.publishedAt,
+          });
+          return result ? [result] : [];
+        });
+      } else if (/application\/json/i.test(contentType)) {
+        const payload = JSON.parse(body) as {
+          topic_list?: { topics?: Array<{ id?: number; slug?: string; title?: string; excerpt?: string; created_at?: string }> };
+        };
+        rawThreads = (payload.topic_list?.topics ?? []).flatMap((topic) => {
+          if (!topic.id || !topic.slug) return [];
+          const result = normalizeResult(source, {
+            url: `https://forum.gcaptain.com/t/${encodeURIComponent(topic.slug)}/${encodeURIComponent(topic.id)}`,
+            title: topic.title ?? "",
+            snippet: topic.excerpt ?? "",
+            publishedAt: topic.created_at,
+          });
+          return result ? [result] : [];
+        });
+      } else {
+        throw new Error("gCaptain sampled index response had an unsupported content type");
+      }
+
+      const seenBeforeIndex = seenThreads.size;
+      for (const thread of rawThreads) {
+        const key = thread.url.replace(/\/$/, "");
+        if (seenThreads.has(key)) {
+          duplicateResultsRejected += 1;
+          continue;
+        }
+        seenThreads.add(key);
+        const relevance = assessDiscoveryCandidate({
+          query: queries[0] ?? "",
+          variants: queries.slice(1),
+          title: thread.title,
+          text: thread.snippet,
+          domainTags: source.domainTags,
+        });
+        if (relevance.accepted && threads.length < MAX_SAMPLED_CANDIDATES) {
+          threads.push({ ...thread, score: relevance.score });
+        }
+      }
+
+      outcomes.push({
+        kind: "sampled_index",
+        sourceId: source.id,
+        indexUrl,
+        queriesEvaluated: queries,
+        status: "success",
+        discoveredCount: rawThreads.length,
+        uniqueCandidateCount: seenThreads.size - seenBeforeIndex,
+        strategy: source.discoveryStrategy,
+        attemptOrdinal,
+      });
+      if (indexUrl === sitemapUrl && !pending.length) queueCategories();
+    } catch (error) {
+      const failure = classifyDiscoveryError(error);
+      warnings.push(`${source.displayName} sampled discovery failed for ${indexUrl}: ${failure.message}`);
+      outcomes.push({
+        kind: "sampled_index",
+        sourceId: source.id,
+        indexUrl,
+        queriesEvaluated: queries,
+        status: failure.status,
+        discoveredCount: 0,
+        strategy: source.discoveryStrategy,
+        attemptOrdinal,
+        issueCode: failure.issueCode,
+      });
+      if (indexUrl === sitemapUrl) queueCategories();
+    }
+  }
+
+  return { threads, warnings, outcomes, irrelevantResultsRejected, duplicateResultsRejected };
+}
+
+async function discoverSampledTask(
+  source: Source,
+  queries: string[],
+  requestBudget: number,
+  fetcher: typeof fetch,
+  rateLimiter: SourceRateLimiter,
+): Promise<SampledDiscoveryResult> {
+  if (source.id === "gcaptain") return discoverGcaptainSample(source, queries, requestBudget, fetcher, rateLimiter);
+  try {
+    const rawThreads = source.discoveryStrategy === "sitemap"
+      ? await discoverSitemap(source, fetcher, rateLimiter)
+      : await discoverCategoryIndex(source, fetcher, rateLimiter);
+    const threads = rawThreads.flatMap((thread) => {
+      const relevance = assessDiscoveryCandidate({
+        query: queries[0] ?? "",
+        variants: queries.slice(1),
+        title: thread.title,
+        text: thread.snippet,
+        domainTags: source.domainTags,
+      });
+      return relevance.accepted ? [{ ...thread, score: relevance.score }] : [];
+    });
+    return {
+      threads,
+      warnings: [],
+      outcomes: [{
+        kind: "sampled_index",
+        sourceId: source.id,
+        indexUrl: source.sitemapUrl ?? source.categoryIndexes?.[0] ?? source.domains[0],
+        queriesEvaluated: queries,
+        status: "success",
+        discoveredCount: rawThreads.length,
+        uniqueCandidateCount: new Set(rawThreads.map((thread) => thread.url.replace(/\/$/, ""))).size,
+        strategy: source.discoveryStrategy,
+        attemptOrdinal: 1,
+      }],
+      irrelevantResultsRejected: 0,
+      duplicateResultsRejected: 0,
+    };
+  } catch (error) {
+    const failure = classifyDiscoveryError(error);
+    return {
+      threads: [],
+      warnings: [`${source.displayName} sampled discovery failed: ${failure.message}`],
+      outcomes: [{
+        kind: "sampled_index",
+        sourceId: source.id,
+        indexUrl: source.sitemapUrl ?? source.categoryIndexes?.[0] ?? source.domains[0],
+        queriesEvaluated: queries,
+        status: failure.status,
+        discoveredCount: 0,
+        strategy: source.discoveryStrategy,
+        attemptOrdinal: 1,
+        issueCode: failure.issueCode,
+      }],
+      irrelevantResultsRejected: 0,
+      duplicateResultsRejected: 0,
+    };
+  }
+}
+
 async function discoverSitemap(source: Source, fetcher: typeof fetch, rateLimiter: SourceRateLimiter): Promise<DiscoveredThread[]> {
   if (!source.sitemapUrl) throw new Error("no sitemap URL is configured");
   const readSitemap = async (url: string) => responseText(await request(source, url, fetcher, rateLimiter));
@@ -428,6 +668,59 @@ export function scheduleDiscoveryAttempts({
   return attempts;
 }
 
+export function scheduleDiscoveryTasks({
+  queries,
+  sources,
+  maxRequests,
+}: {
+  queries: string[];
+  sources: Source[];
+  maxRequests?: number;
+}): DiscoveryTask[] {
+  const budget = Math.max(0, maxRequests ?? Number.MAX_SAFE_INTEGER);
+  if (!queries.length || !sources.length || budget === 0) return [];
+
+  const querySources = sources.filter((source) => source.searchCapability === "query_search");
+  const sampledSources = sources.filter((source) => source.searchCapability === "sampled_index");
+  const tasks: DiscoveryTask[] = [];
+  let requestsReserved = 0;
+  // A partial query-search sweep must not starve the only permitted specialist
+  // index. When the requested three-source coverage cannot fit, reserve each
+  // sampled source's bounded crawl first, then spend the remainder on queries.
+  const sampledReservation = Math.min(
+    budget,
+    sampledSources.reduce((total, source) => total + (source.sampleRequestLimit ?? 1), 0),
+  );
+  const queryBudget = budget - sampledReservation;
+
+  const requiredRounds = Math.min(3, querySources.length);
+  for (let round = 0; round < requiredRounds && requestsReserved < queryBudget; round += 1) {
+    for (let queryIndex = 0; queryIndex < queries.length && requestsReserved < queryBudget; queryIndex += 1) {
+      const source = querySources[(queryIndex + round) % querySources.length]!;
+      tasks.push({ kind: "query_search", source, query: queries[queryIndex]!, attemptOrdinal: round + 1 });
+      requestsReserved += 1;
+    }
+  }
+
+  for (const source of sampledSources) {
+    if (requestsReserved >= budget) break;
+    const requestBudget = Math.min(source.sampleRequestLimit ?? 1, budget - requestsReserved);
+    if (requestBudget <= 0) continue;
+    tasks.push({ kind: "sampled_index", source, queries, requestBudget });
+    requestsReserved += requestBudget;
+  }
+
+  for (let round = requiredRounds; round < querySources.length && requestsReserved < budget; round += 1) {
+    for (let queryIndex = 0; queryIndex < queries.length && requestsReserved < budget; queryIndex += 1) {
+      const source = querySources[(queryIndex + round) % querySources.length]!;
+      tasks.push({ kind: "query_search", source, query: queries[queryIndex]!, attemptOrdinal: round + 1 });
+      requestsReserved += 1;
+    }
+  }
+
+  return tasks;
+}
+
 export async function discoverThreads({
   query,
   sources,
@@ -438,8 +731,10 @@ export async function discoverThreads({
 }: DiscoverInput): Promise<DiscoveryBatch> {
   if (!sources.length) return { threads: [], warnings: [] };
   const queries = [...new Set([query, ...queryVariants].map((item) => item.trim()).filter(Boolean))];
-  const attempts = scheduleDiscoveryAttempts({ queries, sources, maxRequests });
-  const outcomes = await Promise.all(attempts.map(async ({ source, query: queryVariant, attemptOrdinal }) => {
+  const tasks = scheduleDiscoveryTasks({ queries, sources, maxRequests });
+  const queryTasks = tasks.filter((task): task is Extract<DiscoveryTask, { kind: "query_search" }> => task.kind === "query_search");
+  const sampledTasks = tasks.filter((task): task is Extract<DiscoveryTask, { kind: "sampled_index" }> => task.kind === "sampled_index");
+  const outcomes = await Promise.all(queryTasks.map(async ({ source, query: queryVariant, attemptOrdinal }) => {
     try {
       const rawThreads = await discoverSource(source, queryVariant, fetcher, rateLimiter, attemptOrdinal);
       const threads = rawThreads.filter((thread) => assessRelevance({
@@ -451,30 +746,40 @@ export async function discoverThreads({
       return {
         threads,
         rejected: rawThreads.length - threads.length,
-        outcome: { sourceId: source.id, query: queryVariant, status: "success" as const, discoveredCount: rawThreads.length, strategy: source.discoveryStrategy, attemptOrdinal },
+        outcome: { kind: "query_search" as const, sourceId: source.id, query: queryVariant, status: "success" as const, discoveredCount: rawThreads.length, strategy: source.discoveryStrategy, attemptOrdinal },
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : "unknown source error";
-      const blocked = /HTTP (?:401|403|429)|captcha|bot challenge/i.test(message);
-      const issueCode = /HTTP 429/i.test(message)
-        ? "rate_limited" as const
-        : /HTTP 401|login/i.test(message)
-          ? "login_required" as const
-          : /robots/i.test(message)
-            ? "robots_denied" as const
-            : "http_403" as const;
+      const failure = classifyDiscoveryError(error);
       return {
         threads: [] as DiscoveredThread[],
         rejected: 0,
-        outcome: { sourceId: source.id, query: queryVariant, status: blocked ? "blocked" as const : "failed" as const, discoveredCount: 0, strategy: source.discoveryStrategy, attemptOrdinal, issueCode: blocked ? issueCode : undefined },
-        warning: `${source.displayName} discovery failed: ${message}`,
+        outcome: { kind: "query_search" as const, sourceId: source.id, query: queryVariant, status: failure.status, discoveredCount: 0, strategy: source.discoveryStrategy, attemptOrdinal, issueCode: failure.issueCode },
+        warning: `${source.displayName} discovery failed: ${failure.message}`,
       };
     }
   }));
+  const sampled = await Promise.all(sampledTasks.map((task) => discoverSampledTask(
+    task.source,
+    task.queries,
+    task.requestBudget,
+    fetcher,
+    rateLimiter,
+  )));
   return {
-    threads: deduplicate(outcomes.flatMap((outcome) => outcome.threads)),
-    warnings: outcomes.flatMap((outcome) => outcome.warning ? [outcome.warning] : []),
-    sourceOutcomes: outcomes.map((outcome) => outcome.outcome),
-    irrelevantResultsRejected: outcomes.reduce((total, outcome) => total + outcome.rejected, 0),
+    threads: deduplicate([
+      ...outcomes.flatMap((outcome) => outcome.threads),
+      ...sampled.flatMap((result) => result.threads),
+    ]),
+    warnings: [
+      ...outcomes.flatMap((outcome) => outcome.warning ? [outcome.warning] : []),
+      ...sampled.flatMap((result) => result.warnings),
+    ],
+    sourceOutcomes: [
+      ...outcomes.map((outcome) => outcome.outcome),
+      ...sampled.flatMap((result) => result.outcomes),
+    ],
+    irrelevantResultsRejected: outcomes.reduce((total, outcome) => total + outcome.rejected, 0)
+      + sampled.reduce((total, result) => total + result.irrelevantResultsRejected, 0),
+    duplicateResultsRejected: sampled.reduce((total, result) => total + result.duplicateResultsRejected, 0),
   };
 }

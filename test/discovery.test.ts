@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { catalog, getSource } from "../src/catalog.js";
-import { discoverThreads, scheduleDiscoveryAttempts } from "../src/discovery.js";
+import { discoverThreads, scheduleDiscoveryAttempts, scheduleDiscoveryTasks } from "../src/discovery.js";
 import { SourceRateLimiter } from "../src/rate-limit.js";
 
 function source(id: string) {
@@ -9,6 +10,61 @@ function source(id: string) {
   assert.ok(match, `missing catalog source ${id}`);
   return match;
 }
+
+const gcaptainCategoryFixture = readFileSync(new URL("./fixtures/gcaptain/category-page-0.json", import.meta.url), "utf8");
+const gcaptainSitemapIndexFixture = readFileSync(new URL("./fixtures/gcaptain/sitemap-index.xml", import.meta.url), "utf8");
+const gcaptainSitemapThreeFixture = readFileSync(new URL("./fixtures/gcaptain/sitemap-3.xml", import.meta.url), "utf8");
+
+test("gCaptain-only deep discovery schedules one sampled crawl instead of one fake search per query", () => {
+  const queries = [
+    "gemi bakım yazılımı", "AMOS gemi bakım", "ShipManager planned maintenance", "Sertica gemi",
+    "BASSnet bakım", "NS5 ship maintenance", "TM Master", "planned maintenance system PMS", "gemi bakım yönetim sistemi",
+  ];
+
+  const tasks = scheduleDiscoveryTasks({ queries, sources: [source("gcaptain")], maxRequests: 40 });
+
+  assert.equal(tasks.length, 1);
+  assert.equal(tasks[0]?.kind, "sampled_index");
+  assert.deepEqual(tasks[0]?.kind === "sampled_index" ? tasks[0].queries : [], queries);
+});
+
+test("gCaptain discovers a historical maintenance topic from a permitted sitemap child", async () => {
+  const requested: string[] = [];
+  const fetcher = (async (input: URL | string) => {
+    const url = new URL(String(input));
+    requested.push(url.toString());
+    if (url.pathname === "/sitemap.xml") {
+      return new Response(gcaptainSitemapIndexFixture, { headers: { "content-type": "application/xml" } });
+    }
+    if (url.pathname === "/sitemap_3.xml") {
+      return new Response(gcaptainSitemapThreeFixture, { headers: { "content-type": "application/xml" } });
+    }
+    if (url.pathname.startsWith("/sitemap_")) {
+      return new Response('<?xml version="1.0"?><urlset></urlset>', { headers: { "content-type": "application/xml" } });
+    }
+    if (url.pathname.endsWith(".json")) {
+      return new Response(gcaptainCategoryFixture, { headers: { "content-type": "application/json" } });
+    }
+    return new Response("not found", { status: 404 });
+  }) as typeof fetch;
+
+  const result = await discoverThreads({
+    query: "gemi bakım yazılımı kullanıcı deneyimleri",
+    queryVariants: ["NS5 ship maintenance", "planned maintenance system PMS"],
+    sources: [source("gcaptain")],
+    maxRequests: 40,
+    fetcher,
+    rateLimiter: new SourceRateLimiter(() => 0, async () => undefined),
+  });
+
+  assert.equal(new Set(requested).size, requested.length);
+  assert.equal(requested.some((url) => new URL(url).pathname === "/sitemap_3.xml"), true);
+  assert.equal(requested.some((url) => /\/search(?:\.json)?/.test(new URL(url).pathname)), false);
+  assert.deepEqual(result.threads.map(({ url, title }) => ({ url, title })), [{
+    url: "https://forum.gcaptain.com/t/generating-and-maintaining-shipboard-work-lists/63622",
+    title: "generating and maintaining shipboard work lists",
+  }]);
+});
 
 test("deep scheduling gives every maritime variant three distinct source attempts before spending spare budget", () => {
   const sources = [
@@ -33,6 +89,22 @@ test("deep scheduling gives every maritime variant three distinct source attempt
   assert.ok(attempts.some((attempt) => attempt.query === "planned maintenance system PMS"));
 });
 
+test("limited two-language budget still reserves a permitted maritime sampled index", () => {
+  const queries = [
+    "gemi bakım yazılımı", "AMOS gemi bakım", "ShipManager planned maintenance", "Sertica gemi",
+    "BASSnet bakım", "NS5 ship maintenance", "TM Master", "planned maintenance system PMS", "gemi bakım yönetim sistemi",
+  ];
+  const sources = [
+    source("stack-overflow"), source("super-user"), source("server-fault"), source("hacker-news"), source("github-discussions"),
+    source("gcaptain"),
+  ];
+
+  const tasks = scheduleDiscoveryTasks({ queries, sources, maxRequests: 20 });
+
+  assert.ok(tasks.some((task) => task.kind === "sampled_index" && task.source.id === "gcaptain"));
+  assert.ok(tasks.filter((task) => task.kind === "query_search").length < 20);
+});
+
 test("unbounded scheduling visits each query-source pair once", () => {
   const queries = ["one", "two"];
   const sources = [source("donanimarsivi"), source("technopat")];
@@ -43,20 +115,25 @@ test("unbounded scheduling visits each query-source pair once", () => {
   assert.equal(new Set(attempts.map((attempt) => `${attempt.query}:${attempt.source.id}`)).size, 4);
 });
 
-test("gCaptain uses an allowlisted category JSON index and never its robots-denied search path", async () => {
+test("gCaptain uses only allowlisted sitemap and category indexes, never its robots-denied search path", async () => {
   const requested: string[] = [];
   const fetcher = (async (input: URL | string) => {
-    requested.push(String(input));
+    const url = new URL(String(input));
+    requested.push(url.toString());
+    if (url.pathname === "/sitemap.xml") {
+      return new Response(gcaptainSitemapIndexFixture, { headers: { "content-type": "application/xml" } });
+    }
+    if (url.pathname.startsWith("/sitemap_")) {
+      return new Response('<?xml version="1.0"?><urlset></urlset>', { headers: { "content-type": "application/xml" } });
+    }
     return new Response(JSON.stringify({
-      topic_list: {
-        topics: [{
-          id: 63622,
-          slug: "generating-and-maintaining-shipboard-work-lists",
-          title: "Generating and maintaining shipboard work lists",
-          excerpt: "Planned Maintenance System data entry and inspection workload.",
-          created_at: "2022-07-16T00:00:00.000Z",
-        }],
-      },
+      topic_list: { topics: [{
+        id: 63622,
+        slug: "generating-and-maintaining-shipboard-work-lists",
+        title: "Generating and maintaining shipboard work lists",
+        excerpt: "Planned Maintenance System data entry and inspection workload.",
+        created_at: "2022-07-16T00:00:00.000Z",
+      }] },
     }), { headers: { "content-type": "application/json" } });
   }) as typeof fetch;
 
@@ -67,8 +144,10 @@ test("gCaptain uses an allowlisted category JSON index and never its robots-deni
     rateLimiter: new SourceRateLimiter(() => 0, async () => undefined),
   });
 
-  assert.equal(requested.length, 1);
-  assert.match(requested[0]!, /^https:\/\/forum\.gcaptain\.com\/c\/professional-mariner-forum\/5\.json/);
+  assert.equal(requested.length, 8);
+  assert.equal(new Set(requested).size, requested.length);
+  assert.equal(requested.some((url) => new URL(url).pathname === "/sitemap.xml"), true);
+  assert.equal(requested.some((url) => new URL(url).pathname === "/c/professional-mariner-forum/5.json"), true);
   assert.equal(requested.some((url) => /\/search(?:\.json)?/.test(new URL(url).pathname)), false);
   assert.deepEqual(result.threads.map((thread) => ({ url: thread.url, title: thread.title })), [{
     url: "https://forum.gcaptain.com/t/generating-and-maintaining-shipboard-work-lists/63622",
@@ -99,18 +178,25 @@ test("a blocked source leaves a later distinct source attempt available for the 
   assert.equal(outcomes.find((outcome) => outcome.sourceId === "stack-overflow")?.attemptOrdinal, 4);
 });
 
-test("gCaptain rejects a non-JSON category response without trying search", async () => {
+test("gCaptain rejects unsupported sampled-index content without trying search", async () => {
   const requested: string[] = [];
   const fetcher = (async (input: URL | string) => {
     requested.push(String(input));
     return new Response("not a category index", { headers: { "content-type": "text/html" } });
   }) as typeof fetch;
 
-  const result = await discoverThreads({ query: "ship maintenance", sources: [source("gcaptain")], fetcher });
+  const result = await discoverThreads({
+    query: "ship maintenance",
+    sources: [source("gcaptain")],
+    fetcher,
+    rateLimiter: new SourceRateLimiter(() => 0, async () => undefined),
+  });
 
   assert.deepEqual(result.threads, []);
-  assert.match(result.warnings.join(" "), /category index response was not JSON/i);
-  assert.equal(requested.length, 1);
+  assert.match(result.warnings.join(" "), /unsupported content type/i);
+  assert.equal(requested.length, 4);
+  assert.equal(new Set(requested).size, requested.length);
+  assert.equal(requested.some((url) => /\/search(?:\.json)?/.test(new URL(url).pathname)), false);
 });
 
 test("Reddit discovery works directly without an API key", async () => {
@@ -371,7 +457,10 @@ test("every enabled catalog source has a direct discovery adapter", async () => 
     rateLimiter: new SourceRateLimiter(() => 0, async () => undefined),
   });
 
-  assert.equal(requested.length, enabled.length);
+  for (const candidate of enabled) {
+    const discoveryDomains = candidate.discoveryDomains ?? candidate.domains;
+    assert.equal(requested.some((url) => discoveryDomains.includes(new URL(url).hostname)), true, candidate.id);
+  }
   assert.deepEqual(result.warnings, []);
 });
 
