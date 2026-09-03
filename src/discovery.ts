@@ -734,7 +734,7 @@ export async function discoverThreads({
   const tasks = scheduleDiscoveryTasks({ queries, sources, maxRequests });
   const queryTasks = tasks.filter((task): task is Extract<DiscoveryTask, { kind: "query_search" }> => task.kind === "query_search");
   const sampledTasks = tasks.filter((task): task is Extract<DiscoveryTask, { kind: "sampled_index" }> => task.kind === "sampled_index");
-  const outcomes = await Promise.all(queryTasks.map(async ({ source, query: queryVariant, attemptOrdinal }) => {
+  const queryOutcomes = Promise.all(queryTasks.map(async ({ source, query: queryVariant, attemptOrdinal }) => {
     try {
       const rawThreads = await discoverSource(source, queryVariant, fetcher, rateLimiter, attemptOrdinal);
       const threads = rawThreads.filter((thread) => assessRelevance({
@@ -758,13 +758,14 @@ export async function discoverThreads({
       };
     }
   }));
-  const sampled = await Promise.all(sampledTasks.map((task) => discoverSampledTask(
+  const sampledOutcomes = Promise.all(sampledTasks.map((task) => discoverSampledTask(
     task.source,
     task.queries,
     task.requestBudget,
     fetcher,
     rateLimiter,
   )));
+  const [outcomes, sampled] = await Promise.all([queryOutcomes, sampledOutcomes]);
   return {
     threads: deduplicate([
       ...outcomes.flatMap((outcome) => outcome.threads),

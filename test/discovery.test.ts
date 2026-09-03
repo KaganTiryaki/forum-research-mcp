@@ -28,6 +28,48 @@ test("gCaptain-only deep discovery schedules one sampled crawl instead of one fa
   assert.deepEqual(tasks[0]?.kind === "sampled_index" ? tasks[0].queries : [], queries);
 });
 
+test("sampled specialist discovery starts before a slow query-search source finishes", async () => {
+  const releaseSlowSearch = Promise.withResolvers<void>();
+  const gcaptainStarted = Promise.withResolvers<void>();
+  const fetcher = (async (input: URL | string) => {
+    const url = new URL(String(input));
+    if (url.hostname === "forum.donanimarsivi.com") {
+      await releaseSlowSearch.promise;
+      return new Response("<html><body></body></html>", { headers: { "content-type": "text/html" } });
+    }
+    if (url.hostname === "forum.gcaptain.com") {
+      gcaptainStarted.resolve();
+      if (url.pathname === "/sitemap.xml") {
+        return new Response(gcaptainSitemapIndexFixture, { headers: { "content-type": "application/xml" } });
+      }
+      if (url.pathname.startsWith("/sitemap_")) {
+        return new Response('<?xml version="1.0"?><urlset></urlset>', { headers: { "content-type": "application/xml" } });
+      }
+      return new Response(JSON.stringify({ topic_list: { topics: [] } }), { headers: { "content-type": "application/json" } });
+    }
+    return new Response("not found", { status: 404 });
+  }) as typeof fetch;
+
+  const pending = discoverThreads({
+    query: "ship planned maintenance system",
+    sources: [source("donanimarsivi"), source("gcaptain")],
+    maxRequests: 9,
+    fetcher,
+    rateLimiter: new SourceRateLimiter(() => 0, async () => undefined),
+  });
+
+  try {
+    const specialistBegan = await Promise.race([
+      gcaptainStarted.promise.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 100)),
+    ]);
+    assert.equal(specialistBegan, true);
+  } finally {
+    releaseSlowSearch.resolve();
+    await pending;
+  }
+});
+
 test("gCaptain discovers a historical maintenance topic from a permitted sitemap child", async () => {
   const requested: string[] = [];
   const fetcher = (async (input: URL | string) => {

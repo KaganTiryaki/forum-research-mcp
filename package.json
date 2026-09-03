@@ -1,6 +1,6 @@
 {
   "name": "forum-research-mcp",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Read-only bilingual MCP server for researching public Turkish and English forum discussions.",
   "private": true,
   "type": "module",
@@ -9,7 +9,7 @@
     "check": "npm run test && npm run build",
     "dev": "tsx src/index.ts",
     "test": "tsx --test test/**/*.test.ts",
-    "start": "node dist/index.js"
+    "start": "node bin/serve.mjs"
   },
   "engines": {
     "node": ">=24"

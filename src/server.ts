@@ -7,6 +7,7 @@ import { readThread } from "./reader.js";
 import { ForumResearchService } from "./research.js";
 
 export const toolNames = ["forum_research", "forum_search", "thread_read", "forum_sources"] as const;
+export const serverVersion = "0.2.3";
 
 export interface ServerOptions {
   cache?: ResearchCache;
@@ -33,7 +34,7 @@ export function createForumResearchServer(options: ServerOptions = {}): McpServe
     discover: ({ query, sources, queryVariants, maxRequests }) => discoverThreads({ query, sources, queryVariants, maxRequests, fetcher }),
     read: (input, focus) => readThread(input, fetcher, undefined, undefined, focus),
   });
-  const server = new McpServer({ name: "forum-research-mcp", version: "0.2.2" });
+  const server = new McpServer({ name: "forum-research-mcp", version: serverVersion });
 
   server.registerTool("forum_search", {
     title: "Forum search",
@@ -97,6 +98,7 @@ export function createForumResearchServer(options: ServerOptions = {}): McpServe
     },
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
   }, async ({ locale }) => textResult({
+    runtime: { serverVersion },
     sources: catalog
       .filter((source) => locale === "both" || source.locale === locale)
       .map((source) => ({
