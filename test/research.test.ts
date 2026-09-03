@@ -213,6 +213,86 @@ test("maritime maintenance queries receive bounded specialist variants when none
   assert.ok(result.query_variants.length <= 12);
 });
 
+test("maritime research adds vessel management and noon reporting variants within the cap", async () => {
+  const { ForumResearchService } = await import("../src/research.js");
+  const service = new ForumResearchService({ discover: async () => ({ threads: [], warnings: [] }) });
+
+  const result = await service.search({ query: "gemi bakım yazılımı", locale: "both", depth: "deep" });
+
+  assert.ok(result.query_variants.includes("vessel management software"));
+  assert.ok(result.query_variants.includes("noon report software"));
+  assert.ok(result.query_variants.length <= 12);
+});
+
+test("related leads never become research evidence", async () => {
+  const { ForumResearchService } = await import("../src/research.js");
+  const service = new ForumResearchService({
+    discover: async () => ({
+      threads: [],
+      relatedLeads: [{
+        sourceId: "gcaptain",
+        sourceName: "gCaptain",
+        url: "https://forum.gcaptain.com/t/vessel-to-shore-reporting/901",
+        title: "Vessel to shore reporting software",
+        snippet: "Daily report software discussion",
+        exclusionReason: "adjacent_topic" as const,
+      }],
+      warnings: [],
+    }),
+    read: async () => {
+      throw new Error("related leads must not be read");
+    },
+  });
+
+  const result = await service.research({ query: "gemi bakım yazılımı", locale: "en" });
+
+  assert.equal(result.evidence.length, 0);
+  assert.equal(result.related_leads.length, 1);
+  assert.equal(result.related_leads[0]?.url, "https://forum.gcaptain.com/t/vessel-to-shore-reporting/901");
+  assert.equal(result.status, "coverage_limited");
+});
+
+test("discovery cache ignores the prior v4 discovery payload", async () => {
+  const { ForumResearchService } = await import("../src/research.js");
+  const keysRead: string[] = [];
+  const cache = {
+    get: <T>(key: string): T | undefined => {
+      keysRead.push(key);
+      return undefined;
+    },
+    set: () => undefined,
+  };
+  const service = new ForumResearchService({ cache, discover: async () => ({ threads: [], warnings: [] }) });
+
+  await service.search({ query: "cache version", locale: "tr" });
+
+  assert.match(keysRead[0] ?? "", /^v5:discovery:/);
+});
+
+test("a successful source-native search with no candidates is reported as a discovery miss", async () => {
+  const { ForumResearchService } = await import("../src/research.js");
+  const service = new ForumResearchService({
+    discover: async () => ({
+      threads: [],
+      warnings: [],
+      sourceOutcomes: [{
+        kind: "query_search" as const,
+        sourceId: "donanimhaber",
+        query: "gemi bakım yazılımı",
+        status: "success" as const,
+        discoveredCount: 0,
+        strategy: "direct_search" as const,
+        attemptOrdinal: 1,
+      }],
+    }),
+  });
+
+  const result = await service.search({ query: "gemi bakım yazılımı", locale: "tr" });
+
+  assert.ok(result.issues.some((issue) => issue.code === "source_search_missed" && issue.sourceId === "donanimhaber"));
+  assert.equal(result.coverage.nativeDiscovery[0]?.discoveredCandidates, 0);
+});
+
 test("research reports coverage_limited when a requested variant lacks three successful sources", async () => {
   const { ForumResearchService } = await import("../src/research.js");
   const service = new ForumResearchService({

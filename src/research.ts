@@ -1,6 +1,6 @@
 import { catalog, sourcesForLocales, type Source } from "./catalog.js";
 import type { ResearchCache } from "./cache.js";
-import type { DiscoveredThread, DiscoveryBatch } from "./discovery.js";
+import type { DiscoveredThread, DiscoveryBatch, RelatedLead } from "./discovery.js";
 import type { ThreadEvidence } from "./reader.js";
 import type { ReadFocus } from "./discourse.js";
 import { assessRelevance } from "./relevance.js";
@@ -20,6 +20,7 @@ export interface SearchResult {
   locales: Locale[];
   expandedToBoth: boolean;
   threads: DiscoveredThread[];
+  related_leads: RelatedLead[];
   warnings: string[];
   coverage: Coverage;
   issues: ResearchIssue[];
@@ -46,7 +47,7 @@ export type ResearchStatus = "ok" | "partial" | "no_relevant_evidence" | "covera
 
 export interface ResearchIssue {
   stage: "discovery" | "reading" | "relevance";
-  code: "http_403" | "rate_limited" | "robots_denied" | "login_required" | "irrelevant_result" | "read_failed" | "discovery_failed";
+  code: "http_403" | "rate_limited" | "robots_denied" | "login_required" | "irrelevant_result" | "read_failed" | "discovery_failed" | "source_search_missed";
   message: string;
   sourceId?: string;
   url?: string;
@@ -72,6 +73,13 @@ export interface Coverage {
     status: "success" | "blocked" | "failed";
     uniqueCandidates: number;
     matchedQueries: string[];
+  }>;
+  nativeDiscovery: Array<{
+    sourceId: string;
+    strategy: Source["discoveryStrategy"];
+    indexUrl?: string;
+    status: "success" | "blocked" | "failed";
+    discoveredCandidates: number;
   }>;
   perQuery: QueryCoverage[];
   completeForNoRelevantEvidence: boolean;
@@ -112,6 +120,16 @@ function deduplicate(threads: DiscoveredThread[]): DiscoveredThread[] {
   });
 }
 
+function deduplicateRelatedLeads(leads: RelatedLead[]): RelatedLead[] {
+  const seen = new Set<string>();
+  return leads.filter((lead) => {
+    const key = lead.url.replace(/\/$/, "");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, 12);
+}
+
 function prioritizeDistinctSources(threads: DiscoveredThread[]): DiscoveredThread[] {
   const ranked = [...threads].sort((left, right) => (right.score ?? 0) - (left.score ?? 0));
   const seenSources = new Set<string>();
@@ -150,6 +168,10 @@ function suggestedVariants(query: string): string[] {
       "TM Master",
       "planned maintenance system PMS",
       "gemi bakım yönetim sistemi",
+      "fleet management software",
+      "vessel management software",
+      "vessel-to-shore reporting software",
+      "noon report software",
     ];
   }
   return [];
@@ -163,7 +185,7 @@ export class ForumResearchService {
   }
 
   private async discover(query: string, sources: Source[], queryVariants: string[], maxRequests: number): Promise<DiscoveryBatch> {
-    const cacheKey = `v4:discovery:${query}:${queryVariants.join("|")}:${maxRequests}:${sources.map((source) => source.id).sort().join(",")}`;
+    const cacheKey = `v5:discovery:${query}:${queryVariants.join("|")}:${maxRequests}:${sources.map((source) => source.id).sort().join(",")}`;
     const cached = this.dependencies.cache?.get<DiscoveryBatch | DiscoveredThread[]>(cacheKey);
     if (cached) return this.normalizeDiscovery(cached);
 
@@ -178,6 +200,7 @@ export class ForumResearchService {
     } catch (error) {
       return {
         threads: [],
+        relatedLeads: [],
         warnings: [`Discovery failed: ${error instanceof Error ? error.message : "unknown discovery error"}`],
       };
     }
@@ -193,6 +216,7 @@ export class ForumResearchService {
         query_variants: queryVariants,
         expandedToBoth: false,
         threads: [],
+        related_leads: [],
         warnings: ["None of the requested sources are enabled in the forum catalog."],
         coverage_complete_for_no_relevant_evidence: false,
         coverage: this.emptyCoverage(query, queryVariants),
@@ -205,6 +229,7 @@ export class ForumResearchService {
         this.safeDiscover(query, sourcesForLocales([selectedLocale], sources), queryVariants, Math.ceil(discoveryBudget / initialLocales.length))
       ));
       const threads = deduplicate(outcomes.flatMap((outcome) => outcome.threads));
+      const relatedLeads = deduplicateRelatedLeads(outcomes.flatMap((outcome) => outcome.relatedLeads ?? []));
       const warnings = outcomes.flatMap((outcome) => outcome.warnings);
       if (!threads.length) warnings.push("No eligible forum threads were found for this research scope.");
       const coverage = this.coverageFor(query, queryVariants, initialLocales, sources, threads, outcomes);
@@ -214,6 +239,7 @@ export class ForumResearchService {
         coverage_complete_for_no_relevant_evidence: coverage.completeForNoRelevantEvidence,
         expandedToBoth: false,
         threads,
+        related_leads: relatedLeads,
         warnings,
         coverage,
         issues: this.issuesFor(outcomes),
@@ -227,6 +253,7 @@ export class ForumResearchService {
     const locales = [...initialLocales];
     let expandedToBoth = false;
     let threads = initialThreads;
+    let relatedLeads = initial.relatedLeads ?? [];
     const discoveryBatches = [initial];
     const warnings: string[] = [...initial.warnings];
 
@@ -237,6 +264,7 @@ export class ForumResearchService {
         const fallbackResult = await this.safeDiscover(query, fallbackSources, queryVariants, discoveryBudget - initialBudget);
         discoveryBatches.push(fallbackResult);
         threads = [...initialThreads, ...fallbackResult.threads];
+        relatedLeads = [...relatedLeads, ...(fallbackResult.relatedLeads ?? [])];
         warnings.push(...fallbackResult.warnings);
         locales.push(fallback);
         expandedToBoth = true;
@@ -254,6 +282,7 @@ export class ForumResearchService {
       coverage_complete_for_no_relevant_evidence: coverage.completeForNoRelevantEvidence,
       expandedToBoth,
       threads: uniqueThreads,
+      related_leads: deduplicateRelatedLeads(relatedLeads),
       warnings,
       coverage,
       issues: this.issuesFor(discoveryBatches),
@@ -267,6 +296,7 @@ export class ForumResearchService {
       querySearchSources: [], sampledIndexSources: [], irrelevantResultsRejected: 0, duplicateResultsRejected: 0,
       queriesUsed: [], requestedQueries, executedQueries: [],
       locallyEvaluatedQueries: [], sampledIndexes: [],
+      nativeDiscovery: [],
       perQuery: requestedQueries.map((requestedQuery) => ({
         query: requestedQuery, attemptedSources: [], successfulSources: [], blockedSources: [], strategies: [],
         querySearchSuccessfulSources: [], sampledIndexMatchedSources: [],
@@ -335,6 +365,13 @@ export class ForumResearchService {
         uniqueCandidates: outcome.uniqueCandidateCount ?? outcome.discoveredCount,
         matchedQueries: outcome.queriesEvaluated ?? [],
       })),
+      nativeDiscovery: outcomes.map((outcome) => ({
+        sourceId: outcome.sourceId,
+        strategy: outcome.strategy,
+        indexUrl: outcome.indexUrl,
+        status: outcome.status,
+        discoveredCandidates: outcome.discoveredCount,
+      })),
       perQuery,
       completeForNoRelevantEvidence,
     };
@@ -358,6 +395,14 @@ export class ForumResearchService {
           stage: "discovery" as const,
           code: "discovery_failed" as const,
           message: `Source discovery failed for ${context}.`,
+          sourceId: outcome.sourceId,
+        }];
+      }
+      if (outcome.status === "success" && outcome.discoveredCount === 0 && outcome.kind === "query_search") {
+        return [{
+          stage: "discovery" as const,
+          code: "source_search_missed" as const,
+          message: `Source-native search found no candidate for ${context}.`,
           sourceId: outcome.sourceId,
         }];
       }
@@ -391,6 +436,7 @@ export class ForumResearchService {
     const issues = [...search.issues];
     const coverage: Coverage = { ...search.coverage, irrelevantResultsRejected: search.coverage.irrelevantResultsRejected };
     const evidenceVariants = search.query_variants;
+    let relatedLeads = [...search.related_leads];
     const attemptedUrls = new Set<string>();
     let threads = [...search.threads];
     let locales = [...search.locales];
@@ -442,6 +488,7 @@ export class ForumResearchService {
           const fallbackResult = await this.safeDiscover(input.query, fallbackSources, normalizeVariants(input.queryVariants), Math.floor(DISCOVERY_REQUEST_BUDGET[depth] / 2));
           warnings.push(...fallbackResult.warnings);
           threads = deduplicate([...threads, ...fallbackResult.threads]);
+          relatedLeads = deduplicateRelatedLeads([...relatedLeads, ...(fallbackResult.relatedLeads ?? [])]);
           locales = [...locales, fallback];
           expandedToBoth = true;
           warnings.push("Direct evidence was limited, so the research expanded to both languages.");
@@ -473,6 +520,7 @@ export class ForumResearchService {
       locales,
       expandedToBoth,
       threads,
+      related_leads: relatedLeads,
       warnings,
       evidence,
       summary,
