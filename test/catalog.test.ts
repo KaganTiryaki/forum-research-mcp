@@ -44,3 +44,12 @@ test("catalog keeps 25 candidates per locale and excludes blocked platforms", as
   });
   assert.ok(catalog.every((source) => source.robotsStatus && source.termsStatus));
 });
+
+test("Reddit remains passive after its robots policy denied automated crawling", async () => {
+  const { getSource, sourcesForLocales } = await import("../src/catalog.js");
+  const reddit = getSource("reddit");
+
+  assert.equal(reddit?.enabled, false);
+  assert.equal(reddit?.disabledReason, "robots_denied");
+  assert.equal(sourcesForLocales(["en"]).some((source) => source.id === "reddit"), false);
+});

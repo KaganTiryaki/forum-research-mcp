@@ -7,7 +7,7 @@ import { readThread } from "./reader.js";
 import { ForumResearchService } from "./research.js";
 
 export const toolNames = ["forum_research", "forum_search", "thread_read", "forum_sources"] as const;
-export const serverVersion = "0.2.3";
+export const serverVersion = "0.3.0";
 
 export interface ServerOptions {
   cache?: ResearchCache;

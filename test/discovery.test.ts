@@ -272,7 +272,7 @@ test("discovery preserves an adjacent maritime software lead outside the evidenc
   assert.equal(result.relatedLeads?.[0]?.exclusionReason, "adjacent_topic");
 });
 
-test("Reddit discovery works directly without an API key", async () => {
+test("Reddit adapter parses a fixture when explicitly unit-tested", async () => {
   const requested: string[] = [];
   const fetcher = (async (input: URL | string) => {
     requested.push(String(input));
