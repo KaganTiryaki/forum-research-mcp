@@ -198,6 +198,22 @@ test("direct evidence requires a narrative in the extracted post rather than an 
   assert.equal(result.reason, "non_user_narrative");
 });
 
+test("accepts normalized English first-person contractions in a direct user narrative", () => {
+  const used = assessEvidenceRelevance({
+    query: "ship maintenance software",
+    title: "Ship maintenance software discussion",
+    text: "I've used this ship maintenance software during crew handover.",
+  });
+  const using = assessEvidenceRelevance({
+    query: "ship maintenance software",
+    title: "Ship maintenance software discussion",
+    text: "I'm using this ship maintenance software on board.",
+  });
+
+  assert.equal(used.accepted, true);
+  assert.equal(using.accepted, true);
+});
+
 test("rejects maritime software news before it becomes a related lead", () => {
   const result = classifyDiscoveryCandidate({
     query: "ship maintenance software",
