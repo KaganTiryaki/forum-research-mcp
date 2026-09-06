@@ -26,6 +26,18 @@ function errorResult(error: unknown) {
   return { content: [{ type: "text" as const, text: message }], isError: true };
 }
 
+function addBrowserExpansionHint(value: any) {
+  const needsExpansion = ["coverage_limited", "no_relevant_evidence"].includes(value?.status)
+    && Array.isArray(value?.evidence) && value.evidence.length === 0;
+  if (!needsExpansion) return value;
+  return {
+    ...value,
+    browser_discovery_available: true,
+    browser_expansion_suggested: true,
+    browser_expansion_prompt: "Forum kapsamı yetersiz kaldı. Tarayıcı üzerinden genel internet araması yapmamı ister misin? Daha kapsamlı olabilir ancak daha yavaş çalışır.",
+  };
+}
+
 export function createForumResearchServer(options: ServerOptions = {}): McpServer {
   const fetcher = options.fetcher ?? fetch;
   const cache = options.cache ?? new ResearchCache();
@@ -49,7 +61,7 @@ export function createForumResearchServer(options: ServerOptions = {}): McpServe
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
   }, async (input) => {
     try {
-      return textResult(await research.search({ ...input, queryVariants: input.query_variants }));
+      return textResult(addBrowserExpansionHint(await research.search({ ...input, queryVariants: input.query_variants })));
     } catch (error) {
       return errorResult(error);
     }
@@ -68,7 +80,7 @@ export function createForumResearchServer(options: ServerOptions = {}): McpServe
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
   }, async (input) => {
     try {
-      return textResult(await research.research({ ...input, queryVariants: input.query_variants }));
+      return textResult(addBrowserExpansionHint(await research.research({ ...input, queryVariants: input.query_variants })));
     } catch (error) {
       return errorResult(error);
     }
