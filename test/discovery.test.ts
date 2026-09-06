@@ -549,7 +549,7 @@ test("every enabled adapter extracts a canonical thread from a realistic respons
     }
     if (url.hostname === "hn.algolia.com") {
       return new Response(JSON.stringify({
-        hits: [{ objectID: "8863", title: "Hacker News adapter fixture", story_text: "Adapter fixture context", created_at: "2007-04-04T00:00:00Z", points: 104 }],
+        hits: [{ objectID: "8863", title: "HN adapter fixture", story_text: "Adapter fixture context", created_at: "2007-04-04T00:00:00Z", points: 104 }],
       }), { headers: { "content-type": "application/json" } });
     }
     if (url.hostname === "github.com") {

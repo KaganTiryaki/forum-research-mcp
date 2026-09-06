@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assessDiscoveryCandidate, assessRelevance, classifyDiscoveryCandidate } from "../src/relevance.js";
+import { assessDiscoveryCandidate, assessEvidenceRelevance, assessRelevance, classifyDiscoveryCandidate } from "../src/relevance.js";
 
 test("rejects rules, privacy, and FAQ pages for ordinary product research", () => {
   const result = assessRelevance({
@@ -185,4 +185,38 @@ test("rejects an NTSB maintenance news item before it becomes a read candidate",
   });
 
   assert.equal(result.kind, "rejected");
+});
+
+test("direct evidence requires a narrative in the extracted post rather than an experience label in the title", () => {
+  const result = assessEvidenceRelevance({
+    query: "ship maintenance software",
+    title: "Ship maintenance software experience",
+    text: "A product overview prepared by the publisher.",
+  });
+
+  assert.equal(result.accepted, false);
+  assert.equal(result.reason, "non_user_narrative");
+});
+
+test("rejects maritime software news before it becomes a related lead", () => {
+  const result = classifyDiscoveryCandidate({
+    query: "ship maintenance software",
+    title: "Ship maintenance software news",
+    text: "I use this platform on board our vessel.",
+    domainTags: ["maritime", "professional"],
+  });
+
+  assert.equal(result.kind, "rejected");
+});
+
+test("direct maritime evidence independently requires a maintenance workflow", () => {
+  const result = assessEvidenceRelevance({
+    query: "gemi bakım yazılımı kullanıcı deneyimleri",
+    variants: ["vessel management software"],
+    title: "Vessel management software discussion",
+    text: "I use this software on board our vessel every day.",
+  });
+
+  assert.equal(result.accepted, false);
+  assert.equal(result.reason, "insufficient_term_overlap");
 });

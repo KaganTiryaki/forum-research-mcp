@@ -35,13 +35,13 @@ test("research evidence comes from direct thread reads rather than discovery sni
   const service = ForumResearchService
     ? new ForumResearchService({
         discover: async () => [{ sourceId: "donanimarsivi", sourceName: "DA", url: "https://forum.donanimarsivi.com/a", title: "Search title", snippet: "search snippet" }],
-        read: async () => ({ sourceId: "donanimarsivi", sourceName: "DA", url: "https://forum.donanimarsivi.com/a", title: "Ekran kartı kullanıcı deneyimi", excerpt: "Ekran kartı için doğrudan sayfa kanıtı" }),
+        read: async () => ({ sourceId: "donanimarsivi", sourceName: "DA", url: "https://forum.donanimarsivi.com/a", title: "Ekran kartı kullanıcı deneyimi", excerpt: "Ekran kartını iki haftadır kullanıyorum; doğrudan sayfa kanıtı." }),
       })
     : undefined;
 
   const result = await service?.research?.({ query: "ekran kartı", locale: "tr" });
 
-  assert.deepEqual(result?.evidence.map(({ excerpt }) => excerpt), ["Ekran kartı için doğrudan sayfa kanıtı"]);
+  assert.deepEqual(result?.evidence.map(({ excerpt }) => excerpt), ["Ekran kartını iki haftadır kullanıyorum; doğrudan sayfa kanıtı."]);
   assert.match(result?.summary ?? "", /1 directly read thread/i);
 });
 
@@ -88,7 +88,7 @@ test("research passes the primary query and variants to focused direct reads", a
         sourceName: "gCaptain",
         url,
         title: "Generating and maintaining shipboard work lists",
-        excerpt: "NS5 ship maintenance and Planned Maintenance System experience.",
+        excerpt: "In my experience, we use NS5 ship maintenance and the Planned Maintenance System.",
       };
     },
   });
@@ -147,7 +147,7 @@ test("research reads a higher-scored sampled candidate before lower-scored candi
         sourceName: "gCaptain",
         url,
         title: "Generating and maintaining shipboard work lists",
-        excerpt: "NS5 maintenance and Planned Maintenance System experience.",
+        excerpt: "In my experience, we use NS5 maintenance and the Planned Maintenance System.",
       };
     },
   });
