@@ -35,14 +35,39 @@ test("research evidence comes from direct thread reads rather than discovery sni
   const service = ForumResearchService
     ? new ForumResearchService({
         discover: async () => [{ sourceId: "donanimarsivi", sourceName: "DA", url: "https://forum.donanimarsivi.com/a", title: "Search title", snippet: "search snippet" }],
-        read: async () => ({ sourceId: "donanimarsivi", sourceName: "DA", url: "https://forum.donanimarsivi.com/a", title: "Ekran kartı kullanıcı deneyimi", excerpt: "Ekran kartı için doğrudan sayfa kanıtı" }),
+        read: async () => ({ sourceId: "donanimarsivi", sourceName: "DA", url: "https://forum.donanimarsivi.com/a", title: "Ekran kartı kullanıcı deneyimi", excerpt: "Ekran kartını iki haftadır kullanıyorum; doğrudan sayfa kanıtı." }),
       })
     : undefined;
 
   const result = await service?.research?.({ query: "ekran kartı", locale: "tr" });
 
-  assert.deepEqual(result?.evidence.map(({ excerpt }) => excerpt), ["Ekran kartı için doğrudan sayfa kanıtı"]);
+  assert.deepEqual(result?.evidence.map(({ excerpt }) => excerpt), ["Ekran kartını iki haftadır kullanıyorum; doğrudan sayfa kanıtı."]);
   assert.match(result?.summary ?? "", /1 directly read thread/i);
+});
+
+test("research rejects a matching maintenance announcement without a user narrative", async () => {
+  const { ForumResearchService } = await import("../src/research.js");
+  const service = new ForumResearchService({
+    discover: async () => [{
+      sourceId: "gcaptain",
+      sourceName: "gCaptain",
+      url: "https://forum.gcaptain.com/t/maintenance-announcement/1",
+      title: "Ship maintenance software announcement",
+      snippet: "Software announcement",
+    }],
+    read: async ({ sourceId, url }) => ({
+      sourceId,
+      sourceName: "gCaptain",
+      url,
+      title: "Ship maintenance software announcement",
+      excerpt: "The authority announced new ship maintenance software requirements.",
+    }),
+  });
+
+  const result = await service.research({ query: "ship maintenance software", locale: "en" });
+
+  assert.deepEqual(result.evidence, []);
+  assert.ok(result.issues.some((issue) => issue.code === "irrelevant_result"));
 });
 
 test("research passes the primary query and variants to focused direct reads", async () => {
@@ -63,7 +88,7 @@ test("research passes the primary query and variants to focused direct reads", a
         sourceName: "gCaptain",
         url,
         title: "Generating and maintaining shipboard work lists",
-        excerpt: "NS5 ship maintenance and Planned Maintenance System experience.",
+        excerpt: "In my experience, we use NS5 ship maintenance and the Planned Maintenance System.",
       };
     },
   });
@@ -96,7 +121,7 @@ test("default maritime variants remain available to the direct evidence gate", a
       sourceName: "gCaptain",
       url,
       title: "Generating and maintaining shipboard work lists",
-      excerpt: "NS5 maintenance and the Planned Maintenance System reduce forgotten jobs during crew handover.",
+      excerpt: "We use NS5 maintenance and the Planned Maintenance System to reduce forgotten jobs during crew handover.",
     }),
   });
 
@@ -122,7 +147,7 @@ test("research reads a higher-scored sampled candidate before lower-scored candi
         sourceName: "gCaptain",
         url,
         title: "Generating and maintaining shipboard work lists",
-        excerpt: "NS5 maintenance and Planned Maintenance System experience.",
+        excerpt: "In my experience, we use NS5 maintenance and the Planned Maintenance System.",
       };
     },
   });
@@ -211,6 +236,86 @@ test("maritime maintenance queries receive bounded specialist variants when none
   assert.ok(result.query_variants.includes("AMOS gemi bakım"));
   assert.ok(result.query_variants.includes("gemi bakım yönetim sistemi"));
   assert.ok(result.query_variants.length <= 12);
+});
+
+test("maritime research adds vessel management and noon reporting variants within the cap", async () => {
+  const { ForumResearchService } = await import("../src/research.js");
+  const service = new ForumResearchService({ discover: async () => ({ threads: [], warnings: [] }) });
+
+  const result = await service.search({ query: "gemi bakım yazılımı", locale: "both", depth: "deep" });
+
+  assert.ok(result.query_variants.includes("vessel management software"));
+  assert.ok(result.query_variants.includes("noon report software"));
+  assert.ok(result.query_variants.length <= 12);
+});
+
+test("related leads never become research evidence", async () => {
+  const { ForumResearchService } = await import("../src/research.js");
+  const service = new ForumResearchService({
+    discover: async () => ({
+      threads: [],
+      relatedLeads: [{
+        sourceId: "gcaptain",
+        sourceName: "gCaptain",
+        url: "https://forum.gcaptain.com/t/vessel-to-shore-reporting/901",
+        title: "Vessel to shore reporting software",
+        snippet: "Daily report software discussion",
+        exclusionReason: "adjacent_topic" as const,
+      }],
+      warnings: [],
+    }),
+    read: async () => {
+      throw new Error("related leads must not be read");
+    },
+  });
+
+  const result = await service.research({ query: "gemi bakım yazılımı", locale: "en" });
+
+  assert.equal(result.evidence.length, 0);
+  assert.equal(result.related_leads.length, 1);
+  assert.equal(result.related_leads[0]?.url, "https://forum.gcaptain.com/t/vessel-to-shore-reporting/901");
+  assert.equal(result.status, "coverage_limited");
+});
+
+test("discovery cache ignores the prior v10 discovery payload", async () => {
+  const { ForumResearchService } = await import("../src/research.js");
+  const keysRead: string[] = [];
+  const cache = {
+    get: <T>(key: string): T | undefined => {
+      keysRead.push(key);
+      return undefined;
+    },
+    set: () => undefined,
+  };
+  const service = new ForumResearchService({ cache, discover: async () => ({ threads: [], warnings: [] }) });
+
+  await service.search({ query: "cache version", locale: "tr" });
+
+  assert.match(keysRead[0] ?? "", /^v11:discovery:/);
+});
+
+test("a successful source-native search with no candidates is reported as a discovery miss", async () => {
+  const { ForumResearchService } = await import("../src/research.js");
+  const service = new ForumResearchService({
+    discover: async () => ({
+      threads: [],
+      warnings: [],
+      sourceOutcomes: [{
+        kind: "query_search" as const,
+        sourceId: "donanimhaber",
+        query: "gemi bakım yazılımı",
+        status: "success" as const,
+        discoveredCount: 0,
+        strategy: "direct_search" as const,
+        attemptOrdinal: 1,
+      }],
+    }),
+  });
+
+  const result = await service.search({ query: "gemi bakım yazılımı", locale: "tr" });
+
+  assert.ok(result.issues.some((issue) => issue.code === "source_search_missed" && issue.sourceId === "donanimhaber"));
+  assert.equal(result.coverage.nativeDiscovery[0]?.discoveredCandidates, 0);
 });
 
 test("research reports coverage_limited when a requested variant lacks three successful sources", async () => {
@@ -425,7 +530,7 @@ test("quick research samples distinct sources before reading more threads from o
     read: async ({ sourceId, url }) => {
       attempted.push(url);
       if (sourceId === "stack-overflow") throw new Error("blocked");
-      return { sourceId, sourceName: "HN", url, title: "D", excerpt: "direct evidence" };
+      return { sourceId, sourceName: "HN", url, title: "D", excerpt: "I use this direct evidence workflow." };
     },
   });
 
@@ -448,7 +553,7 @@ test("auto research expands languages when discovered threads produce no direct 
       : [{ sourceId: "hacker-news", sourceName: "HN", url: "https://news.ycombinator.com/item?id=5", title: "Fallback", snippet: "" }],
     read: async ({ sourceId, url }) => {
       if (sourceId !== "hacker-news") throw new Error("initial locale blocked");
-      return { sourceId, sourceName: "HN", url, title: "Fallback", excerpt: "readable fallback evidence" };
+      return { sourceId, sourceName: "HN", url, title: "Fallback", excerpt: "We use the readable fallback evidence workflow." };
     },
   });
 

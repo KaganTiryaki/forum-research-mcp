@@ -241,7 +241,38 @@ test("gCaptain rejects unsupported sampled-index content without trying search",
   assert.equal(requested.some((url) => /\/search(?:\.json)?/.test(new URL(url).pathname)), false);
 });
 
-test("Reddit discovery works directly without an API key", async () => {
+test("discovery preserves an adjacent maritime software lead outside the evidence candidate list", async () => {
+  const fetcher = (async (input: URL | string) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/sitemap.xml") {
+      return new Response('<?xml version="1.0"?><urlset></urlset>', { headers: { "content-type": "application/xml" } });
+    }
+    return new Response(JSON.stringify({
+      topic_list: { topics: [{
+        id: 901,
+        slug: "vessel-to-shore-reporting-software",
+        title: "Looking for suggestions for vessel to shore reporting software",
+        excerpt: "Need daily reports from ship to office.",
+        created_at: "2024-09-01T00:00:00.000Z",
+      }] },
+    }), { headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+
+  const result = await discoverThreads({
+    query: "gemi bakım yazılımı kullanıcı deneyimleri",
+    queryVariants: ["vessel-to-shore reporting software"],
+    sources: [source("gcaptain")],
+    maxRequests: 4,
+    fetcher,
+    rateLimiter: new SourceRateLimiter(() => 0, async () => undefined),
+  });
+
+  assert.deepEqual(result.threads, []);
+  assert.equal(result.relatedLeads?.[0]?.title, "Looking for suggestions for vessel to shore reporting software");
+  assert.equal(result.relatedLeads?.[0]?.exclusionReason, "adjacent_topic");
+});
+
+test("Reddit adapter parses a fixture when explicitly unit-tested", async () => {
   const requested: string[] = [];
   const fetcher = (async (input: URL | string) => {
     requested.push(String(input));
@@ -518,7 +549,7 @@ test("every enabled adapter extracts a canonical thread from a realistic respons
     }
     if (url.hostname === "hn.algolia.com") {
       return new Response(JSON.stringify({
-        hits: [{ objectID: "8863", title: "Hacker News adapter fixture", story_text: "Adapter fixture context", created_at: "2007-04-04T00:00:00Z", points: 104 }],
+        hits: [{ objectID: "8863", title: "HN adapter fixture", story_text: "Adapter fixture context", created_at: "2007-04-04T00:00:00Z", points: 104 }],
       }), { headers: { "content-type": "application/json" } });
     }
     if (url.hostname === "github.com") {

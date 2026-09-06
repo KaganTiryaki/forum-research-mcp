@@ -135,7 +135,7 @@ export const catalog: Source[] = [
     discoveryStrategy: "sitemap", sitemapUrl: "https://forum.pchocasi.com.tr/sitemap.xml", disabledReason: "policy_verification_pending",
   }),
 
-  en("reddit", "Reddit", "www.reddit.com", ["general", "technology", "communities"]),
+  en("reddit", "Reddit", "www.reddit.com", ["general", "technology", "communities"], false, "public_html", { disabledReason: "robots_denied" }),
   en("stack-overflow", "Stack Overflow", "stackoverflow.com", ["programming", "software"], true, "public_html", { discoveryDomains: ["api.stackexchange.com"] }),
   en("super-user", "Super User", "superuser.com", ["software", "hardware"], true, "public_html", { discoveryDomains: ["api.stackexchange.com"] }),
   en("server-fault", "Server Fault", "serverfault.com", ["infrastructure", "security"], true, "public_html", { discoveryDomains: ["api.stackexchange.com"] }),

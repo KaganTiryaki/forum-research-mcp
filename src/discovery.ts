@@ -1,7 +1,7 @@
 import type { Source } from "./catalog.js";
 import { readTextWithLimit } from "./http-body.js";
 import { defaultRateLimiter, type SourceRateLimiter } from "./rate-limit.js";
-import { assessDiscoveryCandidate, assessRelevance } from "./relevance.js";
+import { classifyDiscoveryCandidate } from "./relevance.js";
 import { parseSitemapEntries, parseSitemapIndex } from "./sitemap.js";
 
 export interface DiscoveredThread {
@@ -14,8 +14,13 @@ export interface DiscoveredThread {
   score?: number;
 }
 
+export interface RelatedLead extends DiscoveredThread {
+  exclusionReason: "adjacent_topic";
+}
+
 export interface DiscoveryBatch {
   threads: DiscoveredThread[];
+  relatedLeads?: RelatedLead[];
   warnings: string[];
   sourceOutcomes?: DiscoverySourceOutcome[];
   irrelevantResultsRejected?: number;
@@ -338,10 +343,38 @@ async function discoverGcaptainIndex(source: Source, attemptOrdinal: number, fet
 
 interface SampledDiscoveryResult {
   threads: DiscoveredThread[];
+  relatedLeads: RelatedLead[];
   warnings: string[];
   outcomes: DiscoverySourceOutcome[];
   irrelevantResultsRejected: number;
   duplicateResultsRejected: number;
+}
+
+function classifyThreads(source: Source, query: string, variants: string[], rawThreads: DiscoveredThread[]): {
+  threads: DiscoveredThread[];
+  relatedLeads: RelatedLead[];
+  rejected: number;
+} {
+  const threads: DiscoveredThread[] = [];
+  const relatedLeads: RelatedLead[] = [];
+  let rejected = 0;
+  for (const thread of rawThreads) {
+    const classification = classifyDiscoveryCandidate({
+      query,
+      variants,
+      title: thread.title,
+      text: thread.snippet,
+      domainTags: source.domainTags,
+    });
+    if (classification.kind === "accepted") {
+      threads.push({ ...thread, score: thread.score ?? classification.assessment.score });
+    } else if (classification.kind === "related") {
+      relatedLeads.push({ ...thread, exclusionReason: "adjacent_topic" });
+    } else {
+      rejected += 1;
+    }
+  }
+  return { threads, relatedLeads, rejected };
 }
 
 function classifyDiscoveryError(error: unknown): {
@@ -375,6 +408,7 @@ async function discoverGcaptainSample(
   const visited = new Set<string>();
   const seenThreads = new Set<string>();
   const threads: DiscoveredThread[] = [];
+  const relatedLeads: RelatedLead[] = [];
   const warnings: string[] = [];
   const outcomes: DiscoverySourceOutcome[] = [];
   let sitemapBytes = 0;
@@ -456,15 +490,15 @@ async function discoverGcaptainSample(
           continue;
         }
         seenThreads.add(key);
-        const relevance = assessDiscoveryCandidate({
-          query: queries[0] ?? "",
-          variants: queries.slice(1),
-          title: thread.title,
-          text: thread.snippet,
-          domainTags: source.domainTags,
-        });
-        if (relevance.accepted && threads.length < MAX_SAMPLED_CANDIDATES) {
-          threads.push({ ...thread, score: relevance.score });
+        const classification = classifyThreads(source, queries[0] ?? "", queries.slice(1), [thread]);
+        if (classification.threads.length && threads.length < MAX_SAMPLED_CANDIDATES) {
+          threads.push(...classification.threads);
+        }
+        if (classification.relatedLeads.length && relatedLeads.length < 12) {
+          relatedLeads.push(...classification.relatedLeads);
+        }
+        if (classification.rejected) {
+          irrelevantResultsRejected += classification.rejected;
         }
       }
 
@@ -498,7 +532,7 @@ async function discoverGcaptainSample(
     }
   }
 
-  return { threads, warnings, outcomes, irrelevantResultsRejected, duplicateResultsRejected };
+  return { threads, relatedLeads, warnings, outcomes, irrelevantResultsRejected, duplicateResultsRejected };
 }
 
 async function discoverSampledTask(
@@ -513,18 +547,10 @@ async function discoverSampledTask(
     const rawThreads = source.discoveryStrategy === "sitemap"
       ? await discoverSitemap(source, fetcher, rateLimiter)
       : await discoverCategoryIndex(source, fetcher, rateLimiter);
-    const threads = rawThreads.flatMap((thread) => {
-      const relevance = assessDiscoveryCandidate({
-        query: queries[0] ?? "",
-        variants: queries.slice(1),
-        title: thread.title,
-        text: thread.snippet,
-        domainTags: source.domainTags,
-      });
-      return relevance.accepted ? [{ ...thread, score: relevance.score }] : [];
-    });
+    const classified = classifyThreads(source, queries[0] ?? "", queries.slice(1), rawThreads);
     return {
-      threads,
+      threads: classified.threads,
+      relatedLeads: classified.relatedLeads,
       warnings: [],
       outcomes: [{
         kind: "sampled_index",
@@ -537,13 +563,14 @@ async function discoverSampledTask(
         strategy: source.discoveryStrategy,
         attemptOrdinal: 1,
       }],
-      irrelevantResultsRejected: 0,
+      irrelevantResultsRejected: classified.rejected,
       duplicateResultsRejected: 0,
     };
   } catch (error) {
     const failure = classifyDiscoveryError(error);
     return {
       threads: [],
+      relatedLeads: [],
       warnings: [`${source.displayName} sampled discovery failed: ${failure.message}`],
       outcomes: [{
         kind: "sampled_index",
@@ -638,6 +665,10 @@ function deduplicate(threads: DiscoveredThread[]): DiscoveredThread[] {
     seen.add(key);
     return true;
   });
+}
+
+function deduplicateRelatedLeads(leads: RelatedLead[]): RelatedLead[] {
+  return deduplicate(leads).slice(0, 12).map((lead) => ({ ...lead, exclusionReason: "adjacent_topic" }));
 }
 
 export function scheduleDiscoveryAttempts({
@@ -737,21 +768,18 @@ export async function discoverThreads({
   const queryOutcomes = Promise.all(queryTasks.map(async ({ source, query: queryVariant, attemptOrdinal }) => {
     try {
       const rawThreads = await discoverSource(source, queryVariant, fetcher, rateLimiter, attemptOrdinal);
-      const threads = rawThreads.filter((thread) => assessRelevance({
-        query,
-        variants: queryVariants,
-        title: thread.title,
-        text: thread.snippet,
-      }).accepted);
+      const classified = classifyThreads(source, query, queryVariants, rawThreads);
       return {
-        threads,
-        rejected: rawThreads.length - threads.length,
+        threads: classified.threads,
+        relatedLeads: classified.relatedLeads,
+        rejected: classified.rejected,
         outcome: { kind: "query_search" as const, sourceId: source.id, query: queryVariant, status: "success" as const, discoveredCount: rawThreads.length, strategy: source.discoveryStrategy, attemptOrdinal },
       };
     } catch (error) {
       const failure = classifyDiscoveryError(error);
       return {
         threads: [] as DiscoveredThread[],
+        relatedLeads: [] as RelatedLead[],
         rejected: 0,
         outcome: { kind: "query_search" as const, sourceId: source.id, query: queryVariant, status: failure.status, discoveredCount: 0, strategy: source.discoveryStrategy, attemptOrdinal, issueCode: failure.issueCode },
         warning: `${source.displayName} discovery failed: ${failure.message}`,
@@ -770,6 +798,10 @@ export async function discoverThreads({
     threads: deduplicate([
       ...outcomes.flatMap((outcome) => outcome.threads),
       ...sampled.flatMap((result) => result.threads),
+    ]),
+    relatedLeads: deduplicateRelatedLeads([
+      ...outcomes.flatMap((outcome) => outcome.relatedLeads),
+      ...sampled.flatMap((result) => result.relatedLeads),
     ]),
     warnings: [
       ...outcomes.flatMap((outcome) => outcome.warning ? [outcome.warning] : []),

@@ -19,6 +19,15 @@ test("thread reader rejects URLs outside the source allowlist", async () => {
   assert.match(message ?? "", /not allowlisted/i);
 });
 
+test("thread reader keeps Reddit passive even when a public URL is supplied", async () => {
+  const message = await readThread(
+    { sourceId: "reddit", url: "https://www.reddit.com/r/maritime/comments/1f90me6/example/" },
+    fetch,
+  ).then(() => "allowed").catch((error: Error) => error.message);
+
+  assert.match(message, /not enabled/i);
+});
+
 test("thread reader rejects an allowlisted hostname that resolves to a private address", async () => {
   let fetched = false;
   const fetcher = (async () => {
