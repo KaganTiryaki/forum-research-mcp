@@ -113,6 +113,8 @@ Every research result includes a `status`: `ok` needs relevant direct evidence f
 
 ### `thread_read`
 
+Discourse threads include `messages` with author, message date, URL, and a short excerpt. The reader makes at most three page requests and returns at most 40 messages. `threadCoverage` reports read counts, truncation, and additional-page failures. These are directly read posts; when called through research, messages also pass the topical user-narrative filter.
+
 Reads one public thread from an enabled source after validating its source ID, protocol, hostname, path, redirects, response type, and size.
 
 ```json

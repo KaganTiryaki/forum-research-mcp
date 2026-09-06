@@ -71,7 +71,7 @@ const GCAPTAIN_SITEMAP_CHILD_PATH = /^\/sitemap_(?:\d+|recent)\.xml$/i;
 
 const htmlSearchUrl: Record<string, (query: string) => string> = {
   donanimarsivi: (query) => `https://forum.donanimarsivi.com/ara/?q=${encodeURIComponent(query)}`,
-  technopat: (query) => `https://www.technopat.net/sosyal/ara/?q=${encodeURIComponent(query)}`,
+  technopat: (query) => `https://www.technopat.net/sosyal/ara/search?keywords=${encodeURIComponent(query)}`,
   techolay: (query) => `https://techolay.net/sosyal/ara/?q=${encodeURIComponent(query)}`,
   r10: (query) => `https://www.r10.net/search.php?query=${encodeURIComponent(query)}`,
   kizlarsoruyor: (query) => `https://www.kizlarsoruyor.com/ara?q=${encodeURIComponent(query)}`,
@@ -134,9 +134,11 @@ async function request(
   fetcher: typeof fetch,
   rateLimiter: SourceRateLimiter,
   init: RequestInit = {},
+  followSameSourceRedirect = false,
 ): Promise<Response> {
   await rateLimiter.acquire(source.id, source.rateLimitMs);
-  const response = await fetcher(url, {
+  let target = new URL(url);
+  let response = await fetcher(target, {
     ...init,
     headers: {
       Accept: "application/json,text/html;q=0.9,application/xhtml+xml;q=0.8",
@@ -146,6 +148,24 @@ async function request(
     signal: AbortSignal.timeout(15_000),
     redirect: "manual",
   });
+  for (let redirects = 0; followSameSourceRedirect && response.status >= 300 && response.status < 400 && redirects < 2; redirects += 1) {
+    const location = response.headers.get("location");
+    if (!location) break;
+    const next = new URL(location, target);
+    if (!isAllowedResultUrl(next, source)) throw new Error("redirect refused outside source domain");
+    target = next;
+    await rateLimiter.acquire(source.id, source.rateLimitMs);
+    response = await fetcher(target, {
+      ...init,
+      headers: {
+        Accept: "application/json,text/html;q=0.9,application/xhtml+xml;q=0.8",
+        "User-Agent": "ForumResearchMCP/0.1 (read-only research)",
+        ...init.headers,
+      },
+      signal: AbortSignal.timeout(15_000),
+      redirect: "manual",
+    });
+  }
   if (response.status >= 300 && response.status < 400) throw new Error(`redirect refused (HTTP ${response.status})`);
   if ([401, 403, 429].includes(response.status)) throw new Error(`access blocked (HTTP ${response.status}); no retry attempted`);
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -618,8 +638,11 @@ async function discoverSitemap(source: Source, fetcher: typeof fetch, rateLimite
 async function discoverHtml(source: Source, query: string, fetcher: typeof fetch, rateLimiter: SourceRateLimiter): Promise<DiscoveredThread[]> {
   const buildUrl = htmlSearchUrl[source.id];
   if (!buildUrl) throw new Error("no direct search adapter is configured");
-  const searchUrl = buildUrl(query);
-  const response = await request(source, searchUrl, fetcher, rateLimiter);
+  const effectiveQuery = source.id === "technopat"
+    ? query.replace(/\b(?:kullanıcı|kullanic[iı])\s+deneyimi\b/gi, "").replace(/\b(?:forumlarda|forum)\b/gi, "").replace(/\s+/g, " ").trim()
+    : query;
+  const searchUrl = buildUrl(effectiveQuery || query);
+  const response = await request(source, searchUrl, fetcher, rateLimiter, {}, source.id === "technopat");
   const contentType = response.headers.get("content-type") ?? "";
   if (!/text\/html|application\/xhtml\+xml/i.test(contentType)) throw new Error("search response was not HTML");
   const html = await responseText(response);
@@ -640,7 +663,9 @@ async function discoverHtml(source: Source, query: string, fetcher: typeof fetch
     if (!THREAD_PATH.test(url.pathname)) continue;
     const result = normalizeResult(source, { url: url.toString(), title: match[3], snippet: "" });
     if (result) results.push(result);
-    if (results.length >= 5) break;
+    // Search pages often put rules/FAQ links before actual matches. Collect a
+    // larger bounded set so relevance filtering can still reach real threads.
+    if (results.length >= 20) break;
   }
   return results;
 }

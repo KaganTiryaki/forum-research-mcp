@@ -96,6 +96,23 @@ test("thread reader prefers forum post content over navigation and cookie chrome
   assert.doesNotMatch(evidence.excerpt, /cookie settings/i);
 });
 
+test("Hacker News reader extracts comments and removes site chrome from the title", async () => {
+  const fetcher = (async () => new Response(
+    '<html><head><title>Syncthing: A continuous file synchronization program | Hacker News</title></head><body><nav>login news past</nav><div class="comment"><div class="commtext c00">I have used Syncthing for years and it has been reliable for my files.</div></div></body></html>',
+    { headers: { "content-type": "text/html" } },
+  )) as typeof fetch;
+
+  const evidence = await readThread(
+    { sourceId: "hacker-news", url: "https://news.ycombinator.com/item?id=35879039" },
+    fetcher,
+    noWaitLimiter(),
+  );
+
+  assert.equal(evidence.title, "Syncthing: A continuous file synchronization program");
+  assert.match(evidence.excerpt, /used Syncthing for years/);
+  assert.doesNotMatch(evidence.excerpt, /login news past/);
+});
+
 test("gCaptain reader extracts public Discourse posts instead of application chrome", async () => {
   const requested: string[] = [];
   const fetcher = (async (input: URL | string) => {
@@ -286,4 +303,22 @@ test("thread reader rejects non-HTML responses", async () => {
   ).then(() => "allowed").catch((error: Error) => error.message);
 
   assert.match(message, /not an HTML document/i);
+});
+test("Discourse preserves late post attribution and reports blocked pagination", async () => {
+  const urls: string[] = [];
+  const fetcher = (async (input: URL | string) => {
+    const url = new URL(String(input)); urls.push(url.toString());
+    const page = Number(url.searchParams.get("page") ?? 1);
+    if (page === 3) return new Response("blocked", { status: 429 });
+    return new Response(JSON.stringify({ title: "Ship maintenance software", posts_count: 40,
+      post_stream: { posts: [{ post_number: page === 1 ? 1 : 22, username: page === 1 ? "first" : "late", created_at: "2022-07-21T00:00:00Z", cooked: "I use NS5 ship maintenance software for work orders." }] }
+    }), { headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  const result = await readThread({ sourceId: "gcaptain", url: "https://forum.gcaptain.com/t/work-lists/63622" }, fetcher, noWaitLimiter(), undefined, { query: "ship maintenance software", variants: [] });
+  assert.equal(result.messages?.[1]?.author, "late");
+  assert.equal(result.messages?.[1]?.url, "https://forum.gcaptain.com/t/work-lists/63622/22");
+  assert.equal(result.messages?.[1]?.publishedAt, "2022-07-21T00:00:00Z");
+  assert.equal(result.threadCoverage?.truncated, true);
+  assert.match(result.threadCoverage?.warnings.join(" ") ?? "", /429/);
+  assert.equal(urls.length, 3);
 });

@@ -1,4 +1,5 @@
 import { lookup } from "node:dns/promises";
+import { assessEvidenceRelevance } from "./relevance.js";
 import { getSource } from "./catalog.js";
 import { readTextWithLimit } from "./http-body.js";
 import { defaultRateLimiter, type SourceRateLimiter } from "./rate-limit.js";
@@ -10,6 +11,8 @@ export interface ThreadReadInput {
 }
 
 export interface ThreadEvidence {
+  messages?: Array<{ author?: string; publishedAt?: string; url: string; excerpt: string }>;
+  threadCoverage?: { totalPosts?: number; readPosts: number; truncated: boolean; warnings: string[] };
   sourceId: string;
   sourceName: string;
   url: string;
@@ -65,6 +68,16 @@ function evidenceTextFromHtml(html: string): string {
 function titleFromHtml(html: string): string {
   const title = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1];
   return title ? textFromHtml(title) : "Untitled thread";
+}
+
+function hackerNewsCommentText(html: string): string {
+  const blocks: string[] = [];
+  const pattern = /<div\b[^>]*class=["'][^"']*commtext[^"']*["'][^>]*>([\s\S]*?)<\/div>/gi;
+  for (const match of html.matchAll(pattern)) {
+    const text = textFromHtml(match[1]);
+    if (text) blocks.push(text);
+  }
+  return blocks.join(" ");
 }
 
 function publishedAtFromHtml(html: string): string | undefined {
@@ -167,6 +180,7 @@ export async function readThread(
   rateLimiter: SourceRateLimiter = defaultRateLimiter,
   resolver: HostResolver | undefined = fetcher === fetch ? resolveHost : undefined,
   focus?: ReadFocus,
+  paginate = true,
 ): Promise<ThreadEvidence> {
   const source = getSource(input.sourceId);
   if (!source?.enabled) throw new Error("Source is not enabled for read-only research");
@@ -219,23 +233,54 @@ export async function readThread(
   const html = await readTextWithLimit(response, MAX_HTML_BYTES);
   if (source.contentAdapter === "discourse_json") {
     const topic = parseDiscourseTopic(html);
+    const messages: NonNullable<ThreadEvidence["messages"]> = topic.posts.map(post => ({
+      author: post.username, publishedAt: post.createdAt,
+      url: post.postNumber ? `${evidenceTarget.origin}${evidenceTarget.pathname.replace(/\/$/, "")}/${post.postNumber}` : evidenceTarget.toString(),
+      excerpt: post.text.slice(0, 600),
+    }));
+    const warnings: string[] = [];
+    let readPosts = topic.posts.length;
+    if (paginate && !evidenceTarget.searchParams.has("page") && topic.totalPosts && topic.totalPosts > readPosts) {
+      for (let page = 2; page <= 3 && readPosts < topic.totalPosts; page++) {
+        const next = new URL(evidenceTarget);
+        next.searchParams.set("page", String(page));
+        try {
+          const batch = await readThread({ ...input, url: next.toString() }, fetcher, rateLimiter, resolver, undefined, false);
+          const fresh = (batch.messages ?? []).filter(message => !messages.some(existing => existing.url === message.url));
+          if (!fresh.length) break;
+          messages.push(...fresh);
+          readPosts += fresh.length;
+        } catch (error) {
+          warnings.push(error instanceof Error ? error.message : "Additional page failed");
+          break;
+        }
+      }
+    }
+    if (topic.totalPosts !== undefined && readPosts > topic.totalPosts) warnings.push("Source post count is inconsistent with returned messages");
+    const selected = focus ? messages.filter(message => assessEvidenceRelevance({ ...focus, title: topic.title, text: message.excerpt }).accepted) : messages;
     return {
       sourceId: source.id,
       sourceName: source.displayName,
       url: evidenceTarget.toString(),
       title: topic.title,
-      excerpt: discourseExcerpt(topic, focus),
+      excerpt: selected.length ? selected.slice(0, 8).map(message => message.excerpt.slice(0, 150)).join(" ").slice(0, 1200) : discourseExcerpt(topic, focus),
       publishedAt: topic.publishedAt,
+      messages: selected.slice(0, 40),
+      threadCoverage: { totalPosts: topic.totalPosts, readPosts, truncated: (topic.totalPosts ?? readPosts) > readPosts || selected.length > 40, warnings },
     };
   }
   const text = textFromHtml(html);
-  const title = titleFromHtml(html);
+  const title = source.id === "hacker-news"
+    ? titleFromHtml(html).replace(/\s*\|\s*Hacker News\s*$/i, "").trim()
+    : titleFromHtml(html);
   const isChallenge = response.headers.get("cf-mitigated") === "challenge"
     || /^(?:just a moment|attention required|security check)/i.test(title)
     || /verify you are (?:a )?human/i.test(text.slice(0, 1_000));
   if (isChallenge) throw new Error("Source returned a CAPTCHA or bot challenge instead of thread content");
   if (!text) throw new Error("Thread page contained no readable text");
-  const evidenceText = evidenceTextFromHtml(html);
+  const evidenceText = source.id === "hacker-news"
+    ? hackerNewsCommentText(html) || evidenceTextFromHtml(html)
+    : evidenceTextFromHtml(html);
 
   return {
     sourceId: source.id,

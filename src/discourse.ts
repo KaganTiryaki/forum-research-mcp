@@ -6,12 +6,14 @@ export interface ReadFocus {
 }
 
 export interface DiscoursePost {
+  postNumber?: number;
   username?: string;
   createdAt?: string;
   text: string;
 }
 
 export interface DiscourseTopic {
+  totalPosts?: number;
   title: string;
   publishedAt?: string;
   posts: DiscoursePost[];
@@ -56,14 +58,16 @@ export function parseDiscourseTopic(input: string): DiscourseTopic {
   const value = payload as {
     title?: unknown;
     created_at?: unknown;
-    post_stream?: { posts?: Array<{ username?: unknown; created_at?: unknown; cooked?: unknown }> };
+    posts_count?: number;
+    post_stream?: { posts?: Array<{ post_number?: number; username?: unknown; created_at?: unknown; cooked?: unknown }> };
   };
   const title = typeof value.title === "string" ? value.title.trim() : "";
-  const posts = (value.post_stream?.posts ?? []).slice(0, 20).flatMap((post) => {
+  const posts = (value.post_stream?.posts ?? []).slice(0, 60).flatMap((post) => {
     if (typeof post.cooked !== "string") return [];
     const text = textFromCooked(post.cooked);
     if (!text) return [];
     return [{
+      postNumber: post.post_number,
       username: typeof post.username === "string" ? post.username : undefined,
       createdAt: typeof post.created_at === "string" ? post.created_at : undefined,
       text,
@@ -71,6 +75,7 @@ export function parseDiscourseTopic(input: string): DiscourseTopic {
   });
   if (!title || !posts.length) throw new Error("Discourse topic response contained no readable posts");
   return {
+    totalPosts: value.posts_count,
     title,
     publishedAt: typeof value.created_at === "string" ? value.created_at : posts[0]?.createdAt,
     posts,
