@@ -42,6 +42,16 @@ npm run build
 
 Restart the MCP host after rebuilding. Run `node bin/serve.mjs --check` to confirm the installed version and that the compiled server is current.
 
+### Codex `/forum` shortcut
+
+This repository also includes the instructions used by the local Codex skill at `C:\Users\<user>\.codex\skills\forum\SKILL.md`. After installing the skill and restarting Codex, invoke it with:
+
+```text
+/forum gemi bakım yazılımları hakkında kullanıcı deneyimlerini araştır
+```
+
+The shortcut passes the text after `/forum` to `forum_research`. It defaults to automatic language routing and standard depth; ask for `Türkçe`, `İngilizce`, `iki dil`, or `derin tarama` when you want to constrain the search. The shortcut is only a prompt-layer convenience; the MCP server remains usable from any compatible MCP host through the four tools below.
+
 ## Connect an MCP host
 
 Point your MCP host at the source-aware launcher with an absolute path. It rebuilds silently before launching, so a `git pull` cannot leave the host running an old ignored `dist/` directory. Do not point a production MCP configuration directly at `dist/index.js`.
